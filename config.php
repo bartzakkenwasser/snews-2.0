@@ -1,3 +1,7 @@
+;<?php exit; ?>
+; The line above stops this file from being shown in a browser if a web server ever serves it as plain text.
+; Do not remove it. (It is an ordinary comment for the settings reader.)
+
 [DATABASE]
 ; database engine (mysql, sqlite)
 engine = "mysql"
@@ -21,6 +25,11 @@ SECURE_ID = "1234"
 
 ; Jouw HASH String voor sessiebeveiliging
 string_hash = "use_silly_strings"
+
+; Vaste website-adres (optioneel, aanbevolen zodra de site online staat). Voorbeeld: https://www.mijnsite.nl of https://www.mijnsite.nl/map
+; Leeg laten = het adres wordt uit de aanvraag afgeleid (prima voor localhost).
+; Fixed website address (optional, recommended once the site is online). Leave empty on localhost.
+site_url = ""
 
 
 [OPTIONS]
