@@ -23,7 +23,7 @@ One heads-up: the settings table currently contains the hash and salt for admin 
 Usage 1.2M tok10/26 11:35
 
 Question: Suppose a transfer the files (and the database) to a shared hosting are the login credentials admin, admin then preserved?
-10/26 11:39
+10/26 11:38
 
 Yes — admin / admin will still work after migration, because the login is stored in the database (in the settings table), not in the files. The settings table contains:
 Code block
