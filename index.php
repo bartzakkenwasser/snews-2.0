@@ -1,8 +1,8 @@
 <?php
 /*------------------------------------------------------------------------------
-  sNews Version:	1.8.1 - Official (Gecorrigeerd voor PHP 8.1+)
+  sNews Version:	2.0 - Official (Gecorrigeerd voor PHP 8.1+)
   CodeName:     	REVISITED
-  Last Update:		2026 Modernization (brace fix)
+  Last Update:		2026 Modernization (Gecorrigeerd voor PHP 8.1+)
   Developers: 		Rui Mendes, Stephane Fritsch(Skiane), Nukpana
   Thanks to:		  @RobsWebsites
   Copyright (C):	Solucija.com
@@ -11,18 +11,34 @@
 -------------------------------------------------------------------------------- */
 <?php
 ob_start();
-// Zet foutrapportage VOLLEDIG aan
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
+// SECURITY: never show errors to visitors (they reveal file paths, queries and sometimes credentials).
+// Errors go to the PHP error log. Set display_errors to '1' only temporarily while debugging.
+ini_set('display_errors', '0');
+ini_set('display_startup_errors', '0');
+ini_set('log_errors', '1');
 error_reporting(E_ALL);
+
+// snews.php reads config.php, lang/ and addons/ with relative paths, so make sure we run from this folder
+chdir(__DIR__);
 
 // Laad het sNews core-bestand veilig
 require_once __DIR__ . '/snews.php';
+
+// Page language for the <html lang=""> attribute, taken from the site language setting (EN -> en, NL -> nl)
+$page_lang = strtolower((string)s('language'));
+if (!preg_match('/^[a-z]{2,3}$/', $page_lang)) {
+    $page_lang = 'en';
+}
+
+// Sidebar headings: use the language file when it has the text, otherwise the English default
+$label = static function (string $key, string $fallback): string {
+    $text = l($key);
+    return $text !== '' ? htmlspecialchars($text, ENT_QUOTES, 'UTF-8') : $fallback;
+};
 ?>
 <!DOCTYPE html>
-<html lang="en">
+<html lang="<?= $page_lang ?>">
 <head>
-    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
 
     <!-- Titel + meta tags veilig renderen -->
@@ -31,7 +47,7 @@ require_once __DIR__ . '/snews.php';
     <meta name="robots" content="index,follow">
     <meta name="author" content="Solucija.com">
 
-    <link rel="stylesheet" href="css/style.css?v=<?= (int)@filemtime(__DIR__ . '/css/style.css') ?>">
+    <link rel="stylesheet" href="css/style.css?v=<?= (file_exists(__DIR__ . '/css/style.css') ? (int)filemtime(__DIR__ . '/css/style.css') : 0) ?>">
 </head>
 <body>
 <div id="wrapper">
@@ -65,12 +81,12 @@ require_once __DIR__ . '/snews.php';
         <aside id="side">
 
             <div class="single">
-                <h3>Categories</h3>
+                <h3><?= $label('categories', 'Categories') ?></h3>
                 <ul>
                     <?php categories(); ?>
                 </ul>
 
-                <h3>RSS Feeds</h3>
+                <h3><?= $label('rss_feeds', 'RSS Feeds') ?></h3>
                 <ul>
                     <?php rss_links(); ?>
                 </ul>
@@ -79,17 +95,16 @@ require_once __DIR__ . '/snews.php';
             </div>
 
             <div class="single">
-                <h3>New Posts</h3>
+                <h3><?= $label('new_articles', 'New Posts') ?></h3>
                 <ul>
                     <?php menu_articles(0, 3, 1); ?>
                 </ul>
 
-                <h3>New Comments</h3>
+                <h3><?= $label('new_comments', 'New Comments') ?></h3>
                 <ul>
                     <?php new_comments(5, 30); ?>
                 </ul>
 
-                <!-- Verwijderd: other_function() bestaat niet -->
             </div>
 
         </aside>
@@ -98,7 +113,7 @@ require_once __DIR__ . '/snews.php';
     <footer id="footer">
         <p>
             This site is powered by
-            <a href="http://snewscms.com/" target="_blank" rel="noopener">sNews</a>
+            <a href="https://snewscms.com/" target="_blank" rel="noopener noreferrer">sNews</a>
             |
             <?php login_link(); ?>
         </p>
