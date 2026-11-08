@@ -3,6 +3,10 @@
   sNews Version:	2.0 - Official (Gecorrigeerd voor PHP 8.1+)
   CodeName:     	REVISITED
   Last Update:		november 2026 Modernization (Gecorrigeerd voor PHP 8.1+)
+  Developers: 		Rui Mendes, Stephane Fritsch(Skiane), Nukpana
+  Thanks to:		@RobsWebsites
+  Copyright (C):	Solucija.com
+  Last Update:		november 2026 Modernization (Gecorrigeerd voor PHP 8.1+)
   Licence:      	sNews is licensed under a Creative Commons License.
   Revised by:		zakkenwasser , 2026
 -------------------------------------------------------------------------------- */
