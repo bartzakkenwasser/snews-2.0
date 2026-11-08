@@ -1,8 +1,8 @@
 <?php
 /*------------------------------------------------------------------------------
-  sNews Version:	1.8.0 - Official (Gecorrigeerd voor PHP 8.1+)
+  sNews Version:	2.0 - Official (Gecorrigeerd voor PHP 8.1+)
   CodeName:     	REVISITED
-  Last Update:		2026 Modernization (brace fix)
+  Last Update:		November 2026 Modernization (Gecorrigeerd voor PHP 8.1+)
   Developers: 		Rui Mendes, Stephane Fritsch(Skiane), Nukpana
   Thanks to:		@RobsWebsites
   Copyright (C):	Solucija.com
@@ -10,15 +10,33 @@
   Revised by:		zakkenwasser
 -------------------------------------------------------------------------------- */
 
-// Start sNews sessie veilig (alleen als er nog geen sessie actief is)
+// SECURITY: never show PHP errors to visitors (they leak file paths, SQL and sometimes credentials).
+// Errors are written to the PHP error log instead. Temporarily set display_errors to '1' only while debugging.
+ini_set('display_errors', '0');
+ini_set('display_startup_errors', '0');
+ini_set('log_errors', '1');
+error_reporting(E_ALL);
+
 if (session_status() === PHP_SESSION_NONE) {
+
+    $https_now = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off')
+        || strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https';
+
+    // Only accept session ids that the server created itself, and never put them in URLs.
+    ini_set('session.use_strict_mode', '1');
+    ini_set('session.use_only_cookies', '1');
+    ini_set('session.use_trans_sid', '0');
+
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path'     => '/',
+        'secure'   => $https_now,
+        'httponly' => true,
+        'samesite' => 'Strict'
+    ]);
+
     session_start();
 }
-
-// Zet foutrapportage VOLLEDIG aan
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-error_reporting(E_ALL);
 
 
 // RETURN INI FILE (PHP 8.1 compatible)
@@ -59,7 +77,12 @@ function db(): ?PDO
             $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 
         } catch (PDOException $e) {
-            die('Database connection error: ' . $e->getMessage());
+            // Never print the driver message: it can contain the DSN, user name and host.
+            error_log('sNews database connection error: ' . $e->getMessage());
+            if (!headers_sent()) {
+                http_response_code(503);
+            }
+            die('Database connection error.');
         }
     }
 
@@ -80,18 +103,59 @@ function dbfetch(?PDOStatement $result, bool $prepared = false, array $args = []
     try {
         $result->execute($args);
     } catch (PDOException $msg) {
-        die('Query execution error: ' . $msg->getMessage());
+        error_log('sNews query execution error: ' . $msg->getMessage());
+        if (!headers_sent()) {
+            http_response_code(500);
+        }
+        die('Query execution error.');
     }
     return $result;
 }
 
 // SESSION TOKEN
+// Value stored in the session when the administrator logs in. It is an HMAC over the full session id,
+// the browser and the site, keyed with the secret from config.php.
 function token(): string
 {
-    $a = md5(substr(session_id(), 2, 7));
+    $secret = (string)ini_value('SECURITY', 'string_hash') . (defined('SECURE_ID') ? SECURE_ID : '');
     $b = $_SERVER['HTTP_USER_AGENT'] ?? 'unknown_agent';
     $site = defined('_SITE') ? _SITE : '';
-    return md5($a . $b . $site);
+    return hash_hmac('sha256', session_id() . '|' . $b . '|' . $site, $secret);
+}
+
+function csrf_token(): string
+{
+    if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+
+    return $_SESSION['csrf_token'];
+}
+
+function csrf_field(): string
+{
+    return '<input type="hidden" name="csrf_token" value="' .
+        htmlspecialchars(csrf_token(), ENT_QUOTES, 'UTF-8') . '">';
+}
+
+function csrf_check(): bool
+{
+    return isset($_POST['csrf_token'])
+        && is_string($_POST['csrf_token'])
+        && hash_equals(csrf_token(), $_POST['csrf_token']);
+}
+
+// For links that change something (delete, hide, show): "?action=...&amp;" . csrf_query()
+function csrf_query(): string
+{
+    return 'csrf_token=' . rawurlencode(csrf_token());
+}
+
+function csrf_check_get(): bool
+{
+    return isset($_GET['csrf_token'])
+        && is_string($_GET['csrf_token'])
+        && hash_equals(csrf_token(), $_GET['csrf_token']);
 }
 
 // SMART RETRIEVE FUNCTION
@@ -130,12 +194,20 @@ function retrieve(string $column, string $table, string $field, mixed $value): m
         return null;
     }
 
+    // Column, table and field names are put into the SQL text, so only plain identifiers are allowed.
+    if (!preg_match('/^\s*[A-Za-z0-9_]+(?:\s*,\s*[A-Za-z0-9_]+)*\s*$/', $column)
+        || !preg_match('/^[A-Za-z0-9_]+$/', $table)
+        || !preg_match('/^[A-Za-z0-9_]+$/', $field)) {
+        return null;
+    }
+
     $list = explode(',', $column);
     if ($table === 'categories') {
-        if ($column === 'name') {
+        // The cache maps seftitle -> name and id -> seftitle, so only use it for those exact lookups.
+        if ($column === 'name' && $field === 'seftitle') {
             return populate_retr_cache('seftitle', (string)$value);
         }
-        if ($column === 'seftitle') {
+        if ($column === 'seftitle' && $field === 'id') {
             return populate_retr_cache('id', (string)$value);
         }
     }
@@ -168,8 +240,51 @@ function retrieve(string $column, string $table, string $field, mixed $value): m
 // SITE
 function site(): string
 {
-    $protocol = (isset($_SERVER['HTTPS']) && ($_SERVER['HTTPS'] === 'on' || $_SERVER['HTTPS'] === 1) || isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') ? 'https://' : 'http://';
-    $host = $protocol . ($_SERVER['HTTP_HOST'] ?? 'localhost');
+    // Preferred: a fixed address from config.php ([SECURITY] site_url). The visitor cannot influence it.
+    $fixed = trim((string)ini_value('SECURITY', 'site_url'));
+    if ($fixed !== '') {
+        $u = parse_url($fixed);
+        if (is_array($u) && isset($u['scheme'], $u['host'])
+            && in_array(strtolower($u['scheme']), ['http', 'https'], true)
+            && preg_match('/^(?:[a-z0-9.-]+|\[[0-9a-f:.]+\])$/i', $u['host']) === 1
+            && !isset($u['user'], $u['pass'], $u['query'], $u['fragment'])
+            && preg_match('#^[A-Za-z0-9._~/-]*$#', (string)($u['path'] ?? '')) === 1) {
+            $port = isset($u['port']) ? ':' . (int)$u['port'] : '';
+            $path = trim((string)($u['path'] ?? ''), '/');
+            return strtolower($u['scheme']) . '://' . $u['host'] . $port . '/' . ($path !== '' ? $path . '/' : '');
+        }
+    }
+
+    $https = (isset($_SERVER['HTTPS']) && ($_SERVER['HTTPS'] === 'on' || $_SERVER['HTTPS'] === 1 || $_SERVER['HTTPS'] === '1'))
+        || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string)$_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https');
+    $protocol = $https ? 'https://' : 'http://';
+
+    // The Host header is chosen by the client. Only accept a syntactically valid host name (or IP),
+    // otherwise it could be used to inject markup into <base href> and every generated link.
+    $valid_host = static function (string $h): bool {
+        return preg_match('/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::\d{1,5})?$/i', $h) === 1
+            || preg_match('/^\[[0-9a-f:.]+\](?::\d{1,5})?$/i', $h) === 1;
+    };
+
+    $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+    $ok = $valid_host($host);
+
+    // Optional: [SECURITY] allowed_hosts = "example.com,www.example.com" in config.php
+    $allowed = trim((string)ini_value('SECURITY', 'allowed_hosts'));
+    if ($ok && $allowed !== '') {
+        $bare = strtolower(preg_replace('/:\d{1,5}$/', '', $host) ?? $host);
+        $list = array_map(static fn($x) => strtolower(trim($x)), explode(',', $allowed));
+        $ok = in_array($bare, $list, true);
+    }
+
+    if (!$ok) {
+        $host = (string)($_SERVER['SERVER_NAME'] ?? '');
+        if (!$valid_host($host)) {
+            $host = 'localhost';
+        }
+    }
+
+    $host = $protocol . $host;
 
     $script_name = str_replace('\\', '/', $_SERVER['SCRIPT_NAME'] ?? '');
     $directory = rtrim(dirname($script_name), '/');
@@ -184,9 +299,17 @@ function tags(string $tag): string
     static $tags;
     if (!$tags) {
         $on_label = function_exists('l') ? l('on') : 'on';
+        $comments_template = (string)ini_value('INFO_TAGS', 'comments');
+        if (trim($comments_template) === '') {
+            // Fallback when config.php has no [INFO_TAGS] "comments" line: without a template no comment would be shown at all.
+            $comments_template = '<div class="comment">,<strong>,name,</strong>,$on,date,<br />,comment,<br />,edit,</div>';
+        }
+        // Each template piece is trimmed later on, so ordinary spaces around the word would be lost
+        // ("Bartop05.11"); non-breaking spaces survive and give "Bart on 05.11".
+        $on_html = '&nbsp;' . htmlspecialchars(trim($on_label), ENT_QUOTES, 'UTF-8') . '&nbsp;';
         $tags = array(
             'infoline' => (string)ini_value('INFO_TAGS', 'infoline'),
-            'comments' => str_replace('$on', $on_label, (string)ini_value('INFO_TAGS', 'comments'))
+            'comments' => str_replace('$on', $on_html, $comments_template)
         );
     }
     return $tags[$tag] ?? '';
@@ -198,7 +321,19 @@ define('DBTYPE', strtolower((string)ini_value('DATABASE', 'engine')));
 // Accept both the modern "SECURE_ID" key (config.php) and the legacy "key_ID" name.
 define('SECURE_ID', (string)(ini_value('SECURITY', 'SECURE_ID') ?: ini_value('SECURITY', 'key_ID')));
 define('_PRE', (string)ini_value('DATABASE', 'prefix'));
-define('_ADMIN', (isset($_SESSION[_SITE . 'Logged_In']) && $_SESSION[_SITE . 'Logged_In'] === token()));
+// Administrator sessions expire after a period of inactivity ([SECURITY] session_timeout in seconds, default 2 hours).
+if (isset($_SESSION[_SITE . 'Logged_In'])) {
+    $idle_limit = (int)ini_value('SECURITY', 'session_timeout');
+    $idle_limit = $idle_limit > 0 ? $idle_limit : 7200;
+    $last_active = (int)($_SESSION[_SITE . 'last_active'] ?? 0);
+    if ($last_active > 0 && (time() - $last_active) > $idle_limit) {
+        unset($_SESSION[_SITE . 'Logged_In'], $_SESSION[_SITE . 'last_active']);
+    } else {
+        $_SESSION[_SITE . 'last_active'] = time();
+    }
+    unset($idle_limit, $last_active);
+}
+define('_ADMIN', (isset($_SESSION[_SITE . 'Logged_In']) && is_string($_SESSION[_SITE . 'Logged_In']) && hash_equals(token(), $_SESSION[_SITE . 'Logged_In'])));
 
 // SITE SETTINGS
 function s(string $var): string
@@ -232,8 +367,10 @@ function clean(mixed $text): string
     }
 
     $text = (string)$text;
-    $text = strip_tags(htmlspecialchars($text, ENT_QUOTES, 'UTF-8'));
-    $text = preg_replace('/[^\x20-\x7E]/', '', $text);
+    $text = strip_tags(htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
+    // Remove control characters only. (The old pattern removed ALL non-ASCII characters,
+    // which silently deleted accented letters from titles, names and comments.)
+    $text = preg_replace('/[\x00-\x1F\x7F]/', '', $text) ?? '';
 
     return $text;
 }
@@ -263,11 +400,14 @@ function mathCaptcha(): string
     if (_ADMIN) {
         return "";
     }
-    $captcha_label = function_exists('l') ? l('math_captcha') : 'Math Captcha';
+    $captcha_label = function_exists('l') ? l('math_captcha') : '';
+    if ($captcha_label === '') {
+        $captcha_label = strtolower(s('language')) === 'nl' ? 'Los de som op' : 'Solve the sum';
+    }
 
     if (!isset($_SESSION[_SITE . 'mathCaptcha-digit'])) {
-        $x = rand(1, 9);
-        $y = rand(1, 9);
+        $x = random_int(1, 9);
+        $y = random_int(1, 9);
         $_SESSION[_SITE . 'mathCaptcha-digit'] = $x + $y;
         $_SESSION[_SITE . 'mathCaptcha-digit-x'] = $x;
         $_SESSION[_SITE . 'mathCaptcha-digit-y'] = $y;
@@ -275,7 +415,7 @@ function mathCaptcha(): string
 
     $math = '<p><label for="calc">* ' . htmlspecialchars($captcha_label, ENT_QUOTES, 'UTF-8') . ': </label><br />';
     $math .= (int)$_SESSION[_SITE . 'mathCaptcha-digit-x'] . ' + ' . (int)$_SESSION[_SITE . 'mathCaptcha-digit-y'] . ' = ';
-    $math .= '<input type="text" name="calc" id="calc" /></p>';
+    $math .= '<input type="text" name="calc" id="calc" inputmode="numeric" autocomplete="off" required /></p>';
     return $math;
 }
 
@@ -286,6 +426,23 @@ function checkUserPass(mixed $input): ?string
     $output = strip_tags((string)$output);
 
     return (ctype_alnum($output) && strlen($output) > 3 && strlen($output) < 14) ? $output : null;
+}
+
+// PASSWORD CHECK
+// Passwords may contain any printable characters (bcrypt uses at most 72 bytes).
+// $enforce_policy is used when a NEW password is chosen: at least 10 characters.
+function checkPassword(mixed $input, bool $enforce_policy = false): ?string
+{
+    if (!is_string($input) || $input === '') {
+        return null;
+    }
+    if (strlen($input) > 72 || preg_match('/[\x00-\x1F\x7F]/', $input)) {
+        return null;
+    }
+    if ($enforce_policy && mb_strlen($input) < 10) {
+        return null;
+    }
+    return $input;
 }
 
 // ROUTES ARRAY
@@ -356,7 +513,7 @@ readAddons(false);
 
 // LANGUAGE VARIABLES
 $lang_file = 'lang/' . s('language') . '.php';
-if (!empty(s('language')) && file_exists($lang_file)) {
+if (!empty(s('language')) && preg_match('/^[A-Za-z0-9_-]+$/', s('language')) && file_exists($lang_file)) {
     require $lang_file;
 } else {
     if (file_exists('lang/EN.php')) {
@@ -378,6 +535,9 @@ function l(string $var): string
         if (_ADMIN) {
             $lang['admin_SEF'] = 'administration,admin_category,admin_article,article_new,extra_new,page_new,snews_categories,admin_mods';
             $lang['admin_SEF'] .= ',snews_articles,extra_contents,snews_pages,snews_settings,snews_files,logout,groupings,admin_groupings';
+            // The admin links "edit comment", "hide", "show" and the delete links use these actions.
+            // They were missing from this list, so those links ended in a 404. (All of them need a CSRF token.)
+            $lang['admin_SEF'] .= ',editcomment,process,hide,show';
         }
         $lang['js_inc'] = 'login,contact,article_new' . (isset($l['focus']) && !empty($l['focus']) ? $l['focus'] : '');
         $lang['divider'] = (string)ini_value('OPTIONS', 'divider');
@@ -535,13 +695,15 @@ function notification(int $error = 0, string $note = '', string $link = ''): ?st
         }
     }
 
+    $safe_link = preg_replace('/[^A-Za-z0-9_\-\/]/', '', $link) ?? '';
+
     if ($error === 2) {
         $_SESSION[_SITE . 'fatal'] = ($note_html === '') ? '' : '<h3>' . $title . '</h3>' . $note_html . $goto;
 
         if (!headers_sent()) {
-            header('Refresh: 3; url=' . _SITE . $link . '/');
+            header('Refresh: 3; url=' . _SITE . $safe_link . '/');
         }
-        echo '<meta http-equiv="refresh" content="3; url=' . _SITE . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '/">';
+        echo '<meta http-equiv="refresh" content="3; url=' . htmlspecialchars(_SITE . $safe_link . '/', ENT_QUOTES, 'UTF-8') . '">';
         return null;
     }
 
@@ -618,7 +780,7 @@ if (!empty($_GET)) {
 				AND a.seftitle = :subcatSEF $pub_a $pub_c
 				AND subcat = 0";
 
-            $num = stats('articles', '', 'seftitle ="' . preg_replace('/[^a-zA-Z0-9_-]/', '', $subcatSEF) . '"');
+            $num = stats('articles', '', "seftitle = '" . preg_replace('/[^a-zA-Z0-9_-]/', '', $subcatSEF) . "'");
             if ($num !== 0 && $database) {
                 try {
                     $stmt = $database->prepare($Try_Article);
@@ -747,7 +909,8 @@ function title(): void
     $categorySEF_str = (string)($categorySEF ?? '');
     $lfeed = PHP_EOL . "\t";
 
-    echo '<base href="' . _SITE . '" />' . $lfeed;
+    echo '<meta charset="' . (!empty(s('charset')) ? htmlspecialchars(s('charset'), ENT_QUOTES, 'UTF-8') : 'UTF-8') . '" />' . $lfeed;
+    echo '<base href="' . htmlspecialchars(_SITE, ENT_QUOTES, 'UTF-8') . '" />' . $lfeed;
 
     $title = !empty($_TITLE) ? $_TITLE . ' - ' : '';
     $title .= !empty($_NAME) ? $_NAME . ' - ' : '';
@@ -760,8 +923,6 @@ function title(): void
     $title .= s('website_title');
     echo '<title>' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '</title>' . $lfeed;
 
-    echo '<meta charset="' . (!empty(s('charset')) ? htmlspecialchars(s('charset'), ENT_QUOTES, 'UTF-8') : 'UTF-8') . '" />' . $lfeed;
-
     $meta_descr = !empty($_DESCR) ? $_DESCR : s('website_description');
     echo '<meta name="description" content="' . htmlspecialchars($meta_descr, ENT_QUOTES, 'UTF-8') . '" />' . $lfeed;
 
@@ -770,7 +931,8 @@ function title(): void
 
     $js_list = explode(',', l('js_inc'));
     if (_ADMIN || in_array($categorySEF_str, $js_list, true)) {
-        echo "\t" . '<script src="js/admin.js"></script>' . PHP_EOL;
+        $js_v = (file_exists(__DIR__ . '/js/admin.js') ? (int)filemtime(__DIR__ . '/js/admin.js') : 0);
+        echo "\t" . '<script src="js/admin.js?v=' . $js_v . '"></script>' . PHP_EOL;
     }
 }
 
@@ -1086,12 +1248,11 @@ function extra(mixed $mode = '', int $styleit = 0, string $classname = '', strin
                     }
 
                     $action_url = '?action=';
-                    $visibility_html = $r['visible'] === 'YES' ? '<a href="' . _SITE . $action_url . 'hide&amp;item=snews_articles&amp;id=' . (int)$r['id'] . '&amp;back=' . urlencode($url) . '">' . l('hide') . '</a>' : l('hidden') . ' ( <a href="' . _SITE . $action_url . 'show&amp;item=snews_articles&amp;id=' . (int)$r['id'] . '&amp;back=' . urlencode($url) . '">' . l('show') . '</a> )';
+                    $visibility_html = $r['visible'] === 'YES' ? '<a href="' . _SITE . $action_url . 'hide&amp;item=snews_articles&amp;id=' . (int)$r['id'] . '&amp;back=' . urlencode($url) . '&amp;' . csrf_query() . '">' . l('hide') . '</a>' : l('hidden') . ' ( <a href="' . _SITE . $action_url . 'show&amp;item=snews_articles&amp;id=' . (int)$r['id'] . '&amp;back=' . urlencode($url) . '&amp;' . csrf_query() . '">' . l('show') . '</a> )';
 
                     echo _ADMIN ? '<p><a href="' . _SITE . '?action=admin_article&amp;id=' . (int)$r['id'] . '" title="' . htmlspecialchars(l('edit') . ' ' . $r['seftitle'], ENT_QUOTES, 'UTF-8') . '">' . l('edit') . '</a> ' . l('divider') . ' ' . $visibility_html . '</p>' : '';
 
                     if ($styleit === 1) {
-                        echo htmlspecialchars($url, ENT_QUOTES, 'UTF-8');
                         echo '</div>';
                     }
                 }
@@ -1157,6 +1318,10 @@ function set_error(): void
 {
     if (!headers_sent()) {
         header('HTTP/1.1 404 Not Found');
+    }
+    // index.php buffers its output: discard the half-built page so only this small document is sent
+    while (ob_get_level() > 0) {
+        ob_end_clean();
     }
     echo '<!DOCTYPE html>
 <html lang="en">
@@ -1287,12 +1452,12 @@ function articles(): void
         } elseif ($_TYPE === 5) {
             $num = stats('articles', '', 'id=' . $v_ID);
         } elseif ($_TYPE === 7 || $_TYPE === 4 || $_TYPE === 8) {
-            $num = ($display !== 0 && $_TYPE === 7) ? stats('articles', '', 'id=' . $v_ID) : stats('articles', '', 'show_on_home = "YES" AND position = 1');
+            $num = ($display !== 0 && $_TYPE === 7) ? stats('articles', '', 'id=' . $v_ID) : stats('articles', '', "show_on_home = 'YES' AND position = 1");
         }
 
         if ($num !== 0) {
             $position = ($_TYPE === 5 || ($_TYPE === 7 && $display !== 0)) ? 3 : 1;
-            $with_category = ($_TYPE !== 4 && $_TYPE !== 7 && $_TYPE !== 8) ? ' AND category = ' . $v_catID : ' AND show_on_home = "YES"';
+            $with_category = ($_TYPE !== 4 && $_TYPE !== 7 && $_TYPE !== 8) ? ' AND category = ' . $v_catID : " AND show_on_home = 'YES'";
             if ($_TYPE === 5) {
                 $with_category = '';
             }
@@ -1323,6 +1488,7 @@ function articles(): void
 
             $infoline = false;
             $commentable = '';
+            $comment_article_cat = 0;
 
             try {
                 $result = $database->query($query_articles);
@@ -1333,6 +1499,9 @@ function articles(): void
                     foreach ($result as $r) {
                         $infoline = $r['displayinfo'] === 'YES';
                         $text = (string)($r['text'] ?? '');
+                        // The editor puts the [break] marker in a paragraph of its own: reduce it to the bare marker,
+                        // so the article is cut between two paragraphs and no empty <p></p> is left behind.
+                        $text = preg_replace('~<p(?:\s[^>]*)?>\s*\[break\]\s*</p>~i', '[break]', $text) ?? $text;
                         $shorten = 9999000;
 
                         if ($currentPage > 0 && $v_ID === 0 && !empty($text)) {
@@ -1360,15 +1529,28 @@ function articles(): void
                             }
                         }
 
+                        // Schoon eventuele lege witregel-paragrafen rondom de [break] op
+                        $display_text = preg_replace('/<p><br\s*\/?>\s*<\/p>\s*\[break\]/i', '[break]', $text);
+                        $display_text = preg_replace('/\[break\]\s*<p><br\s*\/?>\s*<\/p>/i', '[break]', $display_text);
+
                         if (function_exists('file_include')) {
-                            file_include(str_replace('[break]', '', $text), $shorten);
+                            file_include(str_replace('[break]', '', $display_text), $shorten);
                         } else {
-                            echo str_replace('[break]', '', $text);
+                            echo str_replace('[break]', '', $display_text);
+                        }
+
+                        // Toon altijd een duidelijke klikbare "Lees meer" knop wanneer een artikel is ingekort door [break] of tekenlimiet
+                        $is_shortened = ($v_ID === 0 && (str_contains($text, '[break]') || strlen($text) > $shorten));
+                        if ($is_shortened) {
+                            $art_url = _SITE . (!empty($uri) ? htmlspecialchars($uri, ENT_QUOTES, 'UTF-8') . '/' : '') . htmlspecialchars((string)$r['asef'], ENT_QUOTES, 'UTF-8') . '/';
+                            $read_more_label = (function_exists('l') && l('read_more')) ? l('read_more') : 'Lees meer';
+                            echo '<p class="snews-readmore"><a href="' . $art_url . '" title="' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($read_more_label, ENT_QUOTES, 'UTF-8') . ' &raquo;</a></p>';
                         }
 
                         $commentable = (string)$r['commentable'];
-                        $hide = '?action=hide&amp;item=snews_articles&amp;id=' . (int)$r['aid'] . '&amp;back=' . urlencode($uri);
-                        $show = '?action=show&amp;item=snews_articles&amp;id=' . (int)$r['aid'] . '&amp;back=' . urlencode($uri);
+                        $comment_article_cat = (int)$r['category'];
+                        $hide = '?action=hide&amp;item=snews_articles&amp;id=' . (int)$r['aid'] . '&amp;back=' . urlencode($uri) . '&amp;' . csrf_query();
+                        $show = '?action=show&amp;item=snews_articles&amp;id=' . (int)$r['aid'] . '&amp;back=' . urlencode($uri) . '&amp;' . csrf_query();
 
                         $visiblity = $r['visible'] === 'YES' ? $link . $hide . '">' . l('hide') . '</a>' : l('hidden') . ' ( ' . $link . $show . '">' . l('show') . '</a> )';
 
@@ -1383,7 +1565,7 @@ function articles(): void
                                     case ($tag_item === 'date'):
                                         echo htmlspecialchars($a_date_format, ENT_QUOTES, 'UTF-8');
                                         break;
-                                    case ($tag_item === 'readmore' && strlen($text) > $shorten):
+                                    case ($tag_item === 'readmore' && strlen($text) > $shorten && !$is_shortened):
                                         echo $link . htmlspecialchars($uri, ENT_QUOTES, 'UTF-8') . '/' .
                                              htmlspecialchars((string)$r['asef'], ENT_QUOTES, 'UTF-8') . '/">' .
                                              l('read_more') . '</a> ';
@@ -1416,16 +1598,26 @@ function articles(): void
                 paginator($currentPage, $totalPages, l('paginator'));
             }
 
-            if ($v_ID > 0 && $infoline && function_exists('comment')) {
+            // Comments depend on the article's own "enable commenting" setting only (not on "display info").
+            if ($v_ID > 0 && function_exists('comment')) {
                 if ($commentable === 'YES') {
                     comment('unfreezed');
                 } elseif ($commentable === 'FREEZ') {
                     comment('freezed');
+                } elseif (_ADMIN && $comment_article_cat > 0 && isset($edit_link)) {
+                    // Only the administrator sees this: it explains why an article has no comment section.
+                    $is_nl = strtolower(s('language')) === 'nl';
+                    $hint = $is_nl
+                        ? 'Reacties staan uit voor dit artikel (alleen zichtbaar voor de beheerder). Zet in de editor het vinkje'
+                        : 'Comments are switched off for this article (only visible to the administrator). Tick';
+                    $hint_label = l('enable_commenting') !== '' ? l('enable_commenting') : ($is_nl ? 'Reacties toestaan' : 'Enable commenting');
+                    $hint_end = $is_nl ? 'aan:' : 'in the editor:';
+                    echo '<p class="message"><em>' . $hint . ' &laquo;' . htmlspecialchars($hint_label, ENT_QUOTES, 'UTF-8') . '&raquo; ' . $hint_end . '</em> ' . $edit_link . '</p>';
                 }
             }
         } else {
             if (_ADMIN) {
-                echo '<h2>' . $title_not_found . '</h2>';
+                echo $title_not_found;
             } else {
                 echo '<h2 class="big">' . htmlspecialchars($_NAME_str, ENT_QUOTES, 'UTF-8') . '</h2>';
                 echo '<p>' . l('no_articles') . '</p>';
@@ -1444,6 +1636,13 @@ function comment(string $freeze_status): void
         return;
     }
 
+    // Label from the language file, or a built-in fallback when the key is missing (Dutch for site language NL)
+    $is_nl = strtolower(s('language')) === 'nl';
+    $txt = static function (string $key, string $en, string $nl) use ($is_nl): string {
+        $text = l($key);
+        return $text !== '' ? $text : ($is_nl ? $nl : $en);
+    };
+
     $commentsPage_str = (string)($commentsPage ?? '1');
     $commentsPage_clean = str_replace(l('comment_pages'), '', $commentsPage_str);
     $commentsPage_num = (!is_numeric($commentsPage_clean) || (int)$commentsPage_clean < 1) ? 1 : (int)$commentsPage_clean;
@@ -1454,16 +1653,13 @@ function comment(string $freeze_status): void
         $articleSEF_str = str_replace($paginator_prefix, '', $articleSEF_str);
     }
 
-    echo '<h3>' . htmlspecialchars(l('comments'), ENT_QUOTES, 'UTF-8') . '</h3>';
+    echo '<h3>' . htmlspecialchars($txt('comments', 'Comments', 'Reacties'), ENT_QUOTES, 'UTF-8') . '</h3>';
 
     $comments_order = s('comments_order');
     $comments_order = (strtolower($comments_order) === 'desc') ? 'DESC' : 'ASC';
 
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['comment'])) {
-        // ... (post handling kept short for length – the original logic is preserved in structure)
-        // For brevity in this response the full post-handling block from your original file
-        // should be kept. The important part is that the function closes properly.
-        echo '<p>Comment processing...</p>';
+        comment_process();
         return;
     }
 
@@ -1516,10 +1712,14 @@ function comment(string $freeze_status): void
                             break;
                         case ($tag_item === 'edit' && _ADMIN):
                             echo $edit_link . 'editcomment&amp;commentid=' . (int)$r['id'] . '" title="' . htmlspecialchars(l('edit') . ' ' . l('comment'), ENT_QUOTES, 'UTF-8') . '">' . l('edit') . '</a> ';
-                            echo $edit_link . 'process&amp;task=deletecomment&amp;commentid=' . (int)$r['id'] . '" title="' . htmlspecialchars(l('delete') . ' ' . l('comment'), ENT_QUOTES, 'UTF-8') . '" onclick="return pop(\'' . htmlspecialchars(l('js_delete2'), ENT_QUOTES, 'UTF-8') . '\')">' . l('delete') . '</a>';
+                            echo $edit_link . 'process&amp;task=deletecomment&amp;commentid=' . (int)$r['id'] . '&amp;' . csrf_query() . '" title="' . htmlspecialchars(l('delete') . ' ' . l('comment'), ENT_QUOTES, 'UTF-8') . '" onclick="return pop(\'' . htmlspecialchars(l('js_delete2'), ENT_QUOTES, 'UTF-8') . '\')">' . l('delete') . '</a>';
+                            break;
+                        case ($tag_item === 'edit'):
+                            // administrators only (handled above); visitors see nothing
                             break;
                         default:
-                            echo htmlspecialchars($tag_item, ENT_QUOTES, 'UTF-8');
+                            // The template comes from config.php and intentionally contains HTML (like the infoline).
+                            echo $tag_item;
                     }
                 }
                 $ordinal++;
@@ -1536,31 +1736,176 @@ function comment(string $freeze_status): void
 
     if ($freeze_status !== 'freezed' && s('freeze_comments') !== 'YES') {
         if ($numrows === 0) {
-            echo '<p>' . htmlspecialchars(l('no_comment'), ENT_QUOTES, 'UTF-8') . '</p>';
+            echo '<p>' . htmlspecialchars($txt('no_comment', 'There are no comments yet.', 'Er zijn nog geen reacties.'), ENT_QUOTES, 'UTF-8') . '</p>';
         }
 
         // Simple form (you can expand with the full original form if needed)
         echo '<div class="commentsbox">
-			<h2>' . htmlspecialchars(l('addcomment'), ENT_QUOTES, 'UTF-8') . '</h2>
+			<h2>' . htmlspecialchars($txt('addcomment', 'Add a comment', 'Plaats een reactie'), ENT_QUOTES, 'UTF-8') . '</h2>
 			<form method="post" action="' . _SITE . '" id="post" accept-charset="UTF-8">
-				<p>' . htmlspecialchars(l('required'), ENT_QUOTES, 'UTF-8') . '</p>
-				<p><label for="name">* ' . htmlspecialchars(l('name'), ENT_QUOTES, 'UTF-8') . '</label>:<br />
+				<p>' . htmlspecialchars($txt('required', '* = required', '* = verplicht'), ENT_QUOTES, 'UTF-8') . '</p>
+				<p><label for="name">* ' . htmlspecialchars($txt('name', 'Name', 'Naam'), ENT_QUOTES, 'UTF-8') . '</label>:<br />
 				<input type="text" name="name" id="name" maxlength="50" class="text" required /></p>
-				<p><label for="url">' . htmlspecialchars(l('url'), ENT_QUOTES, 'UTF-8') . '</label>:<br />
+				<p><label for="url">' . htmlspecialchars($txt('url', 'Website', 'Website'), ENT_QUOTES, 'UTF-8') . '</label>:<br />
 				<input type="text" name="url" id="url" maxlength="100" class="text" /></p>
-				<p><label for="text">* ' . htmlspecialchars(l('comment'), ENT_QUOTES, 'UTF-8') . '</label>:<br />
-				<textarea name="text" id="text" rows="5" cols="5" required></textarea></p>
+				<p><label for="text">* ' . htmlspecialchars($txt('comment', 'Comment', 'Reactie'), ENT_QUOTES, 'UTF-8') . '</label>:<br />
+				<textarea name="text" id="text" rows="5" cols="5" maxlength="5000" required></textarea></p>
 				' . mathCaptcha() . '
 				<p>
 					<input type="hidden" name="id" value="' . (int)($_ID ?? 0) . '" />
-					<input type="submit" name="comment" id="comment" class="button" value="' . htmlspecialchars(l('submit'), ENT_QUOTES, 'UTF-8') . '" />
+					<input type="submit" name="comment" id="comment" class="button" value="' . htmlspecialchars($txt('submit', 'Submit', 'Verzenden'), ENT_QUOTES, 'UTF-8') . '" />
 				</p>
 			</form>
 		</div>';
     } else {
-        echo '<p>' . htmlspecialchars(l('frozen_comments'), ENT_QUOTES, 'UTF-8') . '</p>';
+        echo '<p>' . htmlspecialchars($txt('frozen_comments', 'Comments are closed.', 'Reageren is gesloten.'), ENT_QUOTES, 'UTF-8') . '</p>';
     }
-} // ← END OF comment() – this is the critical closing brace
+}
+
+// PROCESS A POSTED COMMENT (called from comment() / center() when the comment form is submitted)
+function comment_process(): void
+{
+    $database = db();
+    if (!$database) {
+        return;
+    }
+
+    // Use the language file text when the key exists, otherwise an English fallback.
+    $nl_texts = [
+        'This article does not exist.'                    => 'Dit artikel bestaat niet.',
+        'Comments are closed.'                            => 'Reageren is gesloten.',
+        'Please enter your name.'                         => 'Vul uw naam in.',
+        'Please enter a comment.'                         => 'Vul een reactie in.',
+        'Your comment is too long (maximum 5000 characters).' => 'Uw reactie is te lang (maximaal 5000 tekens).',
+        'The web address is not valid.'                   => 'Het webadres is niet geldig.',
+        'The calculation is not correct.'                 => 'De som is niet juist.',
+        'Please wait a moment before posting another comment.' => 'Wacht even voordat u nog een reactie plaatst.',
+        'Your comment could not be saved. Please try again later.' => 'Uw reactie kon niet worden opgeslagen. Probeer het later opnieuw.',
+        'Thank you, your comment has been posted.'        => 'Bedankt, uw reactie is geplaatst.',
+        'Thank you, your comment was received and will appear after it has been approved.' => 'Bedankt, uw reactie is ontvangen en verschijnt nadat deze is goedgekeurd.',
+    ];
+    $is_nl = strtolower(s('language')) === 'nl';
+    $t = static function (string $key, string $fallback) use ($nl_texts, $is_nl): string {
+        $text = l($key);
+        if ($text !== '') {
+            return $text;
+        }
+        return ($is_nl && isset($nl_texts[$fallback])) ? $nl_texts[$fallback] : $fallback;
+    };
+    $post = static fn(string $key): string => (isset($_POST[$key]) && is_string($_POST[$key])) ? $_POST[$key] : '';
+
+    // The article is taken from the database, never trusted from the form.
+    $articleId = (int)$post('id');
+    $article = null;
+    if ($articleId > 0) {
+        try {
+            $sql = "SELECT id, title, seftitle, category, commentable FROM " . _PRE . "articles
+                    WHERE id = :id AND published = 1" . (_ADMIN ? '' : " AND visible = 'YES'");
+            $stmt = $database->prepare($sql);
+            $stmt->execute(['id' => $articleId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            $article = $row ?: null;
+        } catch (PDOException $e) {
+            $article = null;
+        }
+    }
+
+    if ($article === null) {
+        echo notification(1, $t('comment_no_article', 'This article does not exist.'), 'home');
+        return;
+    }
+
+    $catPath = (int)$article['category'] > 0 ? cat_rel($article['category'], 'seftitle') : '';
+    $back = ($catPath !== '' ? $catPath . '/' : '') . (string)$article['seftitle'];
+
+    if ((string)$article['commentable'] !== 'YES' || s('freeze_comments') === 'YES') {
+        echo notification(1, $t('frozen_comments', 'Comments are closed.'), $back);
+        return;
+    }
+
+    // Collect and validate the fields
+    $name = trim(preg_replace('/[\x00-\x1F\x7F]/', '', strip_tags($post('name'))) ?? '');
+    $name = mb_substr($name, 0, 50);
+    $url = trim($post('url'));
+    $text = $post('text');
+
+    if ($name === '') {
+        echo notification(1, $t('comment_name_empty', 'Please enter your name.'), $back);
+        return;
+    }
+    if (trim($text) === '') {
+        echo notification(1, $t('comment_text_empty', 'Please enter a comment.'), $back);
+        return;
+    }
+    if (mb_strlen($text) > 5000) {
+        echo notification(1, $t('comment_too_long', 'Your comment is too long (maximum 5000 characters).'), $back);
+        return;
+    }
+    if ($url !== '') {
+        if (stripos($url, 'www.') === 0) {
+            $url = 'http://' . $url;
+        }
+        $scheme = strtolower((string)parse_url($url, PHP_URL_SCHEME));
+        if (filter_var($url, FILTER_VALIDATE_URL) === false || !in_array($scheme, ['http', 'https'], true) || mb_strlen($url) > 100) {
+            echo notification(1, $t('comment_url_invalid', 'The web address is not valid.'), $back);
+            return;
+        }
+    }
+
+    if (!checkMathCaptcha()) {
+        echo notification(1, $t('comment_captcha_wrong', 'The calculation is not correct.'), $back);
+        return;
+    }
+
+    // Flood protection (administrators are exempt)
+    $timer = (int)s('comment_repost_timer');
+    $timer = $timer > 0 ? $timer : 15;
+    $last = (int)($_SESSION[_SITE . 'comment_time'] ?? 0);
+    if (!_ADMIN && $last > 0 && (time() - $last) < $timer) {
+        echo notification(1, $t('comment_wait', 'Please wait a moment before posting another comment.'), $back);
+        return;
+    }
+
+    $comment = cleanComment($text);
+    $approved = (_ADMIN || s('approve_comments') !== 'on') ? 'True' : '';
+
+    try {
+        $stmt = $database->prepare("INSERT INTO " . _PRE . "comments (articleid, name, url, comment, time, approved)
+                                    VALUES (:articleid, :name, :url, :comment, :time, :approved)");
+        $stmt->execute([
+            'articleid' => (int)$article['id'],
+            'name'      => $name,
+            'url'       => $url,
+            'comment'   => $comment,
+            'time'      => date('Y-m-d H:i:s'),
+            'approved'  => $approved,
+        ]);
+    } catch (PDOException $e) {
+        echo notification(1, $t('comment_not_saved', 'Your comment could not be saved. Please try again later.'), $back);
+        return;
+    }
+
+    $_SESSION[_SITE . 'comment_time'] = time();
+
+    // Optional e-mail notification to the site owner
+    $to = (string)s('website_email');
+    if (s('mail_on_comments') === 'on' && filter_var($to, FILTER_VALIDATE_EMAIL) !== false) {
+        $subject = mb_encode_mimeheader('New comment: ' . str_replace(["\r", "\n"], ' ', (string)$article['title']), 'UTF-8');
+        $body = 'Article: ' . (string)$article['title'] . "\n"
+              . 'Name: ' . $name . "\n"
+              . ($url !== '' ? 'URL: ' . $url . "\n" : '')
+              . ($approved === '' ? "Status: waiting for approval\n" : '')
+              . "\n" . br2nl(html_entity_decode($comment, ENT_QUOTES, 'UTF-8')) . "\n";
+        $headers = "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nFrom: " . $to . "\r\n";
+        @mail($to, $subject, $body, $headers);
+    }
+
+    if ($approved === 'True') {
+        echo notification(0, $t('comment_sent', 'Thank you, your comment has been posted.'), $back);
+    } else {
+        echo notification(0, $t('comment_sent_approve', 'Thank you, your comment was received and will appear after it has been approved.'), $back);
+    }
+}
 
 // NEW COMMENTS
 function new_comments(mixed $number = 5, mixed $stringlen = 30): void
@@ -1580,7 +1925,7 @@ function new_comments(mixed $number = 5, mixed $stringlen = 30): void
 		LEFT OUTER JOIN " . _PRE . "articles AS a ON co.articleid = a.id AND a.published = 1 AND (a.commentable = 'YES' OR a.commentable = 'FREEZ')
 		LEFT OUTER JOIN " . _PRE . "categories AS c ON a.category = c.id AND c.published = 'YES'
 		LEFT OUTER JOIN " . _PRE . "categories AS x ON c.subcat = x.id AND x.published = 'YES'
-		WHERE co.approved = 'True'
+		WHERE co.approved = 'True' AND a.id IS NOT NULL
 		ORDER BY co.id DESC LIMIT " . $number;
 
     try {
@@ -1590,7 +1935,9 @@ function new_comments(mixed $number = 5, mixed $stringlen = 30): void
             foreach ($result as $r) {
                 $has_comments = true;
                 $name = (string)($r['coname'] ?? '');
-                $comment = strip_tags((string)($r['comment'] ?? ''));
+                $comment = (string)($r['comment'] ?? '');
+                $comment = preg_replace('/<br\s*\/?>/i', ' ', $comment) ?? $comment;
+                $comment = html_entity_decode(strip_tags($comment), ENT_QUOTES, 'UTF-8');
                 $ncom = $name . ' (' . $comment;
                 if (mb_strlen($ncom) > $stringlen) {
                     $ncom = mb_substr($ncom, 0, $stringlen - 3) . '...';
@@ -1670,13 +2017,14 @@ function search(mixed $limit = 20): void
 
     // Commas mean "any of these terms" (OR). Otherwise spaces mean
     // "all of these words" (AND), matching the original sNews behavior.
+    $search_query = mb_substr($search_query, 0, 100);
     $has_comma = str_contains($search_query, ',');
     if ($has_comma) {
         $terms = array_filter(array_map('trim', explode(',', $search_query)), static fn($term) => $term !== '');
     } else {
         $terms = array_filter(preg_split('/\s+/u', $search_query), static fn($term) => $term !== '');
     }
-    $terms = array_values($terms);
+    $terms = array_slice(array_values($terms), 0, 8);
 
     if (empty($terms)) {
         echo '<p>' . htmlspecialchars(l('charerror'), ENT_QUOTES, 'UTF-8') . '</p>';
@@ -1692,11 +2040,12 @@ function search(mixed $limit = 20): void
         $title_key = ':title' . $index;
         $text_key = ':text' . $index;
         $keywords_key = ':keywords' . $index;
-        $like = '%' . $term . '%';
+        // "!" is the escape character, so a visitor cannot use % and _ as wildcards.
+        $like = '%' . str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term) . '%';
         $params[$title_key] = $like;
         $params[$text_key] = $like;
         $params[$keywords_key] = $like;
-        $term_clauses[] = '(a.title LIKE ' . $title_key . ' OR a.text LIKE ' . $text_key . ' OR a.keywords_meta LIKE ' . $keywords_key . ')';
+        $term_clauses[] = '(a.title LIKE ' . $title_key . " ESCAPE '!' OR a.text LIKE " . $text_key . " ESCAPE '!' OR a.keywords_meta LIKE " . $keywords_key . " ESCAPE '!')";
     }
 
     $search_where = '(' . implode($has_comma ? ' OR ' : ' AND ', $term_clauses) . ')';
@@ -1803,15 +2152,85 @@ function login_link(): void
     echo $login;
 }
 
+// LOGIN THROTTLE: 5 failed attempts per IP address lock that address for 15 minutes.
+// The counter lives in the system temp folder, outside the web root.
+function login_throttle_file(): string
+{
+    $ip = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    return rtrim(sys_get_temp_dir(), '/\\') . DIRECTORY_SEPARATOR . 'snews_login_'
+        . hash('sha256', $ip . '|' . (defined('SECURE_ID') ? SECURE_ID : '')) . '.json';
+}
+
+function login_throttle_state(): array
+{
+    $file = login_throttle_file();
+    $raw = is_file($file) ? @file_get_contents($file) : false;
+    $data = is_string($raw) ? json_decode($raw, true) : null;
+    if (!is_array($data)) {
+        $data = [];
+    }
+    return [
+        'count'        => (int)($data['count'] ?? 0),
+        'first'        => (int)($data['first'] ?? 0),
+        'locked_until' => (int)($data['locked_until'] ?? 0),
+    ];
+}
+
+function login_throttle_locked(): int
+{
+    $state = login_throttle_state();
+    return $state['locked_until'] > time() ? $state['locked_until'] - time() : 0;
+}
+
+function login_throttle_fail(): void
+{
+    $state = login_throttle_state();
+    $now = time();
+    if ($state['first'] === 0 || ($now - $state['first']) > 900) {
+        $state = ['count' => 0, 'first' => $now, 'locked_until' => 0];
+    }
+    $state['count']++;
+    if ($state['count'] >= 5) {
+        $state['locked_until'] = $now + 900;
+    }
+    @file_put_contents(login_throttle_file(), json_encode($state), LOCK_EX);
+}
+
+function login_throttle_clear(): void
+{
+    $file = login_throttle_file();
+    if (is_file($file)) {
+        @unlink($file);
+    }
+}
+
 // VERIFY LOGIN
 function verify_login(): void
 {
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['Loginform']) && !_ADMIN) {
+        $wait = login_throttle_locked();
+        if ($wait > 0) {
+            if (!headers_sent()) {
+                http_response_code(429);
+                header('Retry-After: ' . $wait);
+            }
+            $locked_msg = l('login_locked');
+            if ($locked_msg === '') {
+                $locked_msg = strtolower(s('language')) === 'nl'
+                    ? 'Te veel mislukte inlogpogingen. Probeer het over een kwartier opnieuw.'
+                    : 'Too many failed login attempts. Please try again in 15 minutes.';
+            }
+            echo notification(1, $locked_msg, 'login');
+            return;
+        }
+
         $uname_input = isset($_POST['uname']) ? (string)$_POST['uname'] : '';
         $pass_input = isset($_POST['pass']) ? (string)$_POST['pass'] : '';
 
         $user = checkUserPass($uname_input);
-        $pass = checkUserPass($pass_input);
+        $pass_new = checkPassword($pass_input);
+        // Older installs stored a password that had been run through cleanXSS(); keep those working.
+        $pass_legacy = checkUserPass($pass_input);
 
         $key = md5((string)ini_value('SECURITY', 'string_hash'));
         $sid1 = isset($_POST['sid']) ? (string)$_POST['sid'] : '';
@@ -1822,15 +2241,27 @@ function verify_login(): void
 
         unset($_POST['uname'], $_POST['pass'], $_POST['sid']);
 
-        if (checkMathCaptcha() && md5((string)$user) === s('username') && md5((string)$pass) === s('password') && $salt) {
+        $captcha_ok = checkMathCaptcha();
+        $stored_hash = (string)s('password');
+        $user_ok = $user !== null && hash_equals((string)s('username'), $user);
+        $pass_ok = ($pass_new !== null && password_verify($pass_new, $stored_hash))
+            || ($pass_legacy !== null && $pass_legacy !== $pass_new && password_verify($pass_legacy, $stored_hash));
+
+        if ($captcha_ok && $user_ok && $pass_ok && $salt) {
+            session_regenerate_id(true);
             $_SESSION[_SITE . 'Logged_In'] = token();
+            $_SESSION[_SITE . 'last_active'] = time();
+            unset($_SESSION['csrf_token']);
+            login_throttle_clear();
             echo '<h3>' . htmlspecialchars(l('login_success'), ENT_QUOTES, 'UTF-8') . '</h3>';
 
             if (!headers_sent()) {
                 header('Refresh: 2; url=' . _SITE . 'administration/');
             }
-            echo '<meta http-equiv="refresh" content="2; url=' . _SITE . 'administration/">';
+            echo '<meta http-equiv="refresh" content="2; url=' . htmlspecialchars(_SITE . 'administration/', ENT_QUOTES, 'UTF-8') . '">';
         } else {
+            login_throttle_fail();
+            usleep(300000);
             echo notification(1, l('err_Login'), 'login');
             return;
         }
@@ -1971,21 +2402,45 @@ function center(): void
 // ROUTES
 addRoute('login', l('login'), 'login');
 
+// WORD FILTER FILE: must be a file inside the site folder (no absolute paths, no "..")
+function word_filter_path_ok(string $file): bool
+{
+    if ($file === '' || str_contains($file, "\0")) {
+        return false;
+    }
+    $real = realpath($file);
+    $base = realpath(__DIR__);
+    return $real !== false && $base !== false && str_starts_with($real, $base . DIRECTORY_SEPARATOR);
+}
+
 // CLEAN - WORD FILTER
 function cleanWords(string $text): string
 {
     $filter_enable = s('word_filter_enable');
     $filter_file = s('word_filter_file');
 
-    if (!empty($filter_enable) && strtolower($filter_enable) === 'on' && !empty($filter_file) && file_exists($filter_file)) {
-        $file_lines = file($filter_file);
+    if (!empty($filter_enable) && strtolower($filter_enable) === 'on' && !empty($filter_file) && word_filter_path_ok($filter_file) && is_file($filter_file)) {
+        $file_lines = file($filter_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
         if (is_array($file_lines)) {
-            $bad_words_from_what = preg_replace('/(^[\r\n]*|[\r\n]+)[\s\t]*[\r\n]+/', '', $file_lines);
-            $bad_words_from_what = preg_replace('/^(.*)$/', '/\\1/i', $bad_words_from_what);
-            $bad_words_to_what = s('word_filter_change');
+            $patterns = [];
+            foreach ($file_lines as $line) {
+                $word = trim($line);
+                if ($word === '') {
+                    continue;
+                }
+                // A line may be a plain word or a regular expression; fall back to a literal match if it is not a valid pattern.
+                $pattern = '#' . str_replace('#', '\\#', $word) . '#iu';
+                if (@preg_match($pattern, '') === false) {
+                    $pattern = '#' . preg_quote($word, '#') . '#iu';
+                }
+                $patterns[] = $pattern;
+            }
 
-            if (!empty($bad_words_from_what)) {
-                $text = (string)preg_replace($bad_words_from_what, $bad_words_to_what, $text);
+            if (!empty($patterns)) {
+                $replaced = preg_replace($patterns, s('word_filter_change'), $text);
+                if ($replaced !== null) {
+                    $text = $replaced;
+                }
             }
         }
     }
@@ -2065,11 +2520,15 @@ function restore_link(array $url): string
 function cleanComment(mixed $val): string
 {
     $val_str = trim((string)$val);
-    if ($val_str !== "") {
-        // Simplified clean – expand with your full original logic if needed
-        return htmlspecialchars($val_str, ENT_QUOTES, 'UTF-8');
+    if ($val_str === '') {
+        return '';
     }
-    return clean($val);
+
+    $val_str = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $val_str) ?? '';
+    $val_str = cleanWords($val_str);
+
+    // Escape once (existing entities are kept so editing a comment does not double-encode it) and keep the line breaks.
+    return nl2br(htmlspecialchars($val_str, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8', false));
 }
 
 // FILE INCLUSION
@@ -2079,12 +2538,16 @@ function file_include(mixed $text, mixed $shorten): void
     $shorten_int = (int)$shorten;
 
     $fulltext = substr($text_str, 0, $shorten_int);
-    if (substr_count($fulltext, '&') > 0) {
-        $fulltext = str_replace('&', '&amp;', str_replace('&amp;', '&', $fulltext));
-    }
 
-    if ($shorten_int < 9999000 && str_contains($fulltext, '<p>')) {
-        if (substr_count($fulltext, '<p>') > substr_count($fulltext, '</p>')) {
+    // Escape stray ampersands only. Existing entities (&amp; &nbsp; &lt; &#039; ...) must stay as they are,
+    // otherwise the editor's HTML would show up as literal "&nbsp;" and "&lt;" on the page.
+    $fulltext = preg_replace('/&(?!(?:[a-zA-Z][a-zA-Z0-9]*|#[0-9]+|#[xX][0-9a-fA-F]+);)/', '&amp;', $fulltext) ?? $fulltext;
+
+    if ($shorten_int < 9999000) {
+        // The cut can fall right after an opening <p>: drop it instead of leaving an empty paragraph
+        $fulltext = preg_replace('~<p(?:\s[^>]*)?>\s*$~i', '', $fulltext) ?? $fulltext;
+
+        if (preg_match_all('~<p[\s>]~i', $fulltext) > substr_count(strtolower($fulltext), '</p>')) {
             $fulltext .= '</p>';
         }
     }
@@ -2143,12 +2606,21 @@ function posting_time(string $time = ''): void
 function send_email(array $send_array): bool
 {
     if (function_exists('mail')) {
-        $to = (string)($send_array['to'] ?? '');
-        $name = (string)($send_array['name'] ?? '');
-        $email = (string)($send_array['email'] ?? '');
-        $subject = (string)($send_array['subject'] ?? '');
+        // Header values must never contain line breaks (mail header injection).
+        $no_eol = static fn(string $value): string => str_replace(["\r", "\n", "%0a", "%0d"], '', $value);
+        $to = $no_eol((string)($send_array['to'] ?? ''));
+        $name = $no_eol((string)($send_array['name'] ?? ''));
+        $email = $no_eol((string)($send_array['email'] ?? ''));
+        $subject = $no_eol((string)($send_array['subject'] ?? ''));
         $message = (string)($send_array['message'] ?? '');
         $comment = (string)($send_array['comment'] ?? '');
+
+        // Keep the display name free of characters that could change the meaning of the From header.
+        $name = str_replace(['<', '>', '"'], '', $name);
+        if (filter_var($to, FILTER_VALIDATE_EMAIL) === false || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+            echo notification(1, l('contact_not_sent'), 'home');
+            return false;
+        }
 
         $body = !empty($send_array['status']) ? $send_array['status'] . "\n" : '';
         $text = '';
