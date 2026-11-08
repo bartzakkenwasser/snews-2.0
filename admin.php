@@ -1,16 +1,16 @@
 <?php
 /*------------------------------------------------------------------------------
-  sNews Version:	1.8.1 - Official (Gecorrigeerd voor PHP 8.1+)
+  sNews Version:	2.0 - Official (Gecorrigeerd voor PHP 8.1+)
   CodeName:     	REVISITED
-  Last Update:		2026 Modernization (brace fix)
-  Developers: 		Rui Mendes, Stephane Fritsch(Skiane), Nukpana
-  Thanks to:		@RobsWebsites
-  Copyright (C):	Solucija.com
+  Last Update:		november 2026 Modernization (Gecorrigeerd voor PHP 8.1+)
   Licence:      	sNews is licensed under a Creative Commons License.
   Revised by:		zakkenwasser , 2026
 -------------------------------------------------------------------------------- */
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
+<?php
+// SECURITY: errors are logged, never shown to visitors.
+ini_set('display_errors', '0');
+ini_set('display_startup_errors', '0');
+ini_set('log_errors', '1');
 error_reporting(E_ALL);
 
 // NO HACK PLEASE (Gecorrigeerd naar de veilige, cross-platform basename() functie)
@@ -39,6 +39,17 @@ if (!defined('_ADMIN') || !_ADMIN) {
 function administration(): void {
 	// FIX: Herschreven naar de schone en veilige PHP 8.1 methode om POST data te resetten
 	$_POST = [];
+
+	// Warn while the well-known install default (admin / admin) is still the login.
+	if ((string)s('username') === 'admin' && password_verify('admin', (string)s('password'))) {
+		$nl_warn = strtolower((string)s('language')) === 'nl';
+		$warn_title = $nl_warn ? 'Beveiligingswaarschuwing' : 'Security warning';
+		$warn_text = $nl_warn
+			? 'Je gebruikt nog de standaardlogin (admin / admin). Iedereen die dit weet kan inloggen. Wijzig nu de gebruikersnaam en het wachtwoord via Instellingen.'
+			: 'You are still using the default login (admin / admin). Anyone who knows this can log in. Change the username and password now under Settings.';
+		echo '<div class="adminpanel"><p class="admintitle" style="color:#c00000">' . htmlspecialchars($warn_title, ENT_QUOTES, 'UTF-8') . '</p>';
+		echo '<p>' . htmlspecialchars($warn_text, ENT_QUOTES, 'UTF-8') . ' <a href="' . _SITE . 'snews_settings/">' . htmlspecialchars(l('settings'), ENT_QUOTES, 'UTF-8') . '</a></p></div>';
+	}
 	
 	echo '<div class="adminpanel">';
 	echo '<p class="admintitle"><a href="http://snewscms.com/" title="sNews CMS">sNews</a> ' . htmlspecialchars(l('administration'), ENT_QUOTES, 'UTF-8') . '</p>';
@@ -172,16 +183,20 @@ function cleancheckSEF(mixed $string): string {
 // PREPARE TEXT TO DATABASE (CRUCIALE FIX: get_magic_quotes_gpc volledig verwijderd wegens fatal error)
 function clean_mysql(mixed $text): string {
 	$text_str = (string)$text;
-	// get_magic_quotes_gpc en magic_quotes_sybase logica zijn VERWIJDERD uit PHP.
-	$text_str = urldecode($text_str);
-	return str_replace('\\"', '"', $text_str);
+	// The article text is posted as plain HTML by the editor and saved with prepared statements, so it must NOT
+	// be urldecoded: that would turn every "+" into a space and decode %20 in links.
+	// Only text that has no "<" at all but does contain an encoded "<" (%3C) is treated as url-encoded.
+	if (!str_contains($text_str, '<') && stripos($text_str, '%3C') !== false) {
+		$text_str = urldecode($text_str);
+	}
+	return $text_str;
 }
 
 // SETTINGS FORM (PHP 8.1 safe form initialization)
 function settings(): void {
 	echo '<div class="adminpanel"><p class="admintitle">' . htmlspecialchars(l('settings_title'), ENT_QUOTES, 'UTF-8') . '</p>';
 	echo html_input('form', '', 'post', '', '', '', '', '', '', '', '', '', 'post', '?action=process&amp;task=save_settings', '');
-		
+	echo csrf_field();
 		# Expandable Settings
 		echo '<p><a onclick="toggle(\'sub1\')" style="cursor: pointer;" title="' . htmlspecialchars(l('a_openclose') . l('settings'), ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars(l('settings'), ENT_QUOTES, 'UTF-8') . '</a></p>';
 		echo '<div id="sub1" style="display: none;">';
@@ -274,12 +289,18 @@ function settings(): void {
 	# Change Password panel (Gecorrigeerd: Structuur en nesting hersteld)
 	echo '<div class="adminpanel">';
 		echo html_input('form', '', 'post', '', '', '', '', '', '', '', '', '', 'post', '?action=process&amp;task=changeup', '');
+		echo csrf_field();
 		echo '<p><a onclick="toggle(\'sub6\')" style="cursor: pointer;" title="' . htmlspecialchars(l('a_openclose') . l('change_up'), ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars(l('change_up'), ENT_QUOTES, 'UTF-8') . '</a></p>';
 		echo '<div id="sub6" style="display: none;">';
 		echo '<p>' . htmlspecialchars(l('login_limit'), ENT_QUOTES, 'UTF-8') . '</p>';
+		$nl_ui = strtolower((string)s('language')) === 'nl';
+		$cur_label = l('current_password') !== '' ? l('current_password') : ($nl_ui ? 'Huidig wachtwoord' : 'Current password');
+		$min_note = $nl_ui ? 'Een nieuw wachtwoord moet minimaal 10 tekens lang zijn.' : 'A new password must be at least 10 characters long.';
+		echo '<p>' . htmlspecialchars($min_note, ENT_QUOTES, 'UTF-8') . '</p>';
 		echo html_input('text', 'uname', 'uname', '', l('a_username'), '', '', '', '', '', '', '', '', '', '');
-		echo html_input('password', 'pass1', 'pass1', '', l('a_password'), '', '', '', '', '', '', '', '', '', '');
-		echo html_input('password', 'pass2', 'pass2', '', l('a_password2'), '', '', '', '', '', '', '', '', '', '');
+		echo html_input('password', 'pass_current', 'pass_current', '', $cur_label, '', 'autocomplete="current-password"', '', '', '', '', '', '', '', '');
+		echo html_input('password', 'pass1', 'pass1', '', l('a_password'), '', 'autocomplete="new-password"', '', '', '', '', '', '', '', '');
+		echo html_input('password', 'pass2', 'pass2', '', l('a_password2'), '', 'autocomplete="new-password"', '', '', '', '', '', '', '', '');
 		echo '<p>';
 		# Save Password Change button
 		echo html_input('hidden', 'action', '', 'process', '', '', '', '', '', '', '', '', '', '', '');
@@ -304,6 +325,7 @@ function admin_categories(): void {
 	echo '<div class="adminpanel">';
 	echo '<p class="admintitle">' . l('categories') . $add . '</p>';
 	echo html_input('form', '', '', '', '', '', '', '', '', '', '', '', 'post', '?action=process&amp;task=reorder', '');
+	echo csrf_field();
 	echo '<p><input type="hidden" name="order" id="order" value="snews_categories" /></p>';
 	
 	$num_cat = stats('categories', '', 'subcat = 0');
@@ -349,14 +371,15 @@ function admin_categories(): void {
 	
 	echo html_input('hidden', 'action', 'process', 'process', '', '', '', '', '', '', '', '', '', '', '');
 	echo html_input('hidden', 'task', 'task', 'reorder', '', '', '', '', '', '', '', '', '', '', '');
-	echo '';
+	echo '<p>';
 	echo html_input('submit', 'reorder', 'reorder', l('order_content'), '', 'button', '', '', '', '', '', '', '', '', '');
-	echo '';
-	echo '';
+	echo '</p></form>';
+	echo '</div>';
 	}
 
 // CATEGORIES FORM (PHP 8.1 safe: prepared queries & undefined array key fixes)
 function form_categories(string $subcat = 'cat'): void {
+	echo csrf_field();
 	$database = db();
 	if (!$database) {
 		return;
@@ -429,6 +452,7 @@ function form_categories(string $subcat = 'cat'): void {
 	}
 	
 	echo html_input('form', '', 'post', '', '', '', '', '', '', '', '', '', 'post', $frm_action, '');
+	echo csrf_field();
 	echo '<div class="adminpanel">';
 	echo '<p class="admintitle">' . htmlspecialchars($frm_add_edit, ENT_QUOTES, 'UTF-8') . '</p>';
 	echo html_input('text', 'name', 't', $frm_name, l('name'), '', 'onchange="genSEF(this,document.forms[\'post\'].seftitle)"', 'onkeyup="genSEF(this,document.forms[\'post\'].seftitle)"', '', '', '', '', '', '', '');
@@ -571,6 +595,7 @@ function form_groupings(): void {
 	}
 	
 	echo html_input('form', '', 'post', '', '', '', '', '', '', '', '', '', 'post', $frm_action, '');
+	echo csrf_field();
 	echo '<div class="adminpanel">';
 	echo '<p class="admintitle">' . htmlspecialchars($frm_add_edit, ENT_QUOTES, 'UTF-8') . '</p>';
 	echo html_input('text', 'name', 't', $frm_name, l('name'), '', 'onchange="genSEF(this,document.forms[\'post\'].seftitle)"', 'onkeyup="genSEF(this,document.forms[\'post\'].seftitle)"', '', '', '', '', '', '', '');
@@ -609,68 +634,145 @@ function admin_groupings(): void {
 	echo '<p class="admintitle">' . l('groupings') . $add . '</p>';
 	$num = stats('extras', '');
 if ($num === 0) {
-echo '' . htmlspecialchars(l('group_not_exist'), ENT_QUOTES, 'UTF-8') . '';
+echo '<p>' . htmlspecialchars(l('group_not_exist'), ENT_QUOTES, 'UTF-8') . '</p>';
 } else {
 $query = "SELECT id, name, description FROM " . _PRE . "extras ORDER BY id ASC";
 try {
 $result = $database->query($query);
 if ($result) {
 foreach ($result as $r) {
-echo '';
-echo '' . htmlspecialchars((string)$r['name'], ENT_QUOTES, 'UTF-8') . ' ' . l('divider') . ' ';
-echo '' . l('edit') . '';
-echo '';
+echo '<p><strong>' . htmlspecialchars((string)$r['name'], ENT_QUOTES, 'UTF-8') . '</strong> ' . l('divider') . ' ';
+echo '<a href="' . _SITE . '?action=admin_groupings&amp;id=' . (int)$r['id'] . '" title="' . htmlspecialchars((string)$r['description'], ENT_QUOTES, 'UTF-8') . '">' . l('edit') . '</a>';
+echo '</p>';
 }
 } else {
-echo '' . htmlspecialchars(l('group_not_exist'), ENT_QUOTES, 'UTF-8') . '';
+echo '<p>' . htmlspecialchars(l('group_not_exist'), ENT_QUOTES, 'UTF-8') . '</p>';
 }
 } catch (PDOException $e) {
-echo '' . htmlspecialchars(l('group_not_exist'), ENT_QUOTES, 'UTF-8') . '';
+echo '<p>' . htmlspecialchars(l('group_not_exist'), ENT_QUOTES, 'UTF-8') . '</p>';
 }
 }
-echo '';
+echo '</div>';
 }
 
 
 
-// BUTTONS (PHP 8.1 safe: strikte array check en veilige taal-fallbacks)
-function buttons(): void {
-	echo '<div class="clearer"></div>
-	<p>' . htmlspecialchars(l('formatting'), ENT_QUOTES, 'UTF-8') . ':
-	<br class="clearer" />';
-	
-	$formatting = array(
-		'strong'    => '',
-		'em'        => 'key',
-		'underline' => 'key',
-		'del'       => 'key',
-		'p'         => '',
-		'br'        => ''
-	);
-	
-	foreach ($formatting as $key => $var) {
-		$css = ($var === 'key') ? $key : 'buttons';
-		echo '<input type="button" name="' . htmlspecialchars($key, ENT_QUOTES, 'UTF-8') . '" title="' . htmlspecialchars(l($key), ENT_QUOTES, 'UTF-8') . '" class="' . htmlspecialchars($css, ENT_QUOTES, 'UTF-8') . '" onclick="tag(\'' . htmlspecialchars($key, ENT_QUOTES, 'UTF-8') . '\',\'\',\'\')" value="' . htmlspecialchars(l($key . '_value'), ENT_QUOTES, 'UTF-8') . '" />';
-	}
-	
-	echo '</p><br class="clearer" /><p>' . htmlspecialchars(l('insert'), ENT_QUOTES, 'UTF-8') . ': <br class="clearer" />';
-	
-	$insert = [
-		'img'     => 'js_image1,js_image2',
-		'link'    => 'js_link1,js_link2',
-		'include' => 'js_file,on',
-		'func'    => 'js_func1,js_func2',
-		'intro'   => 'on,on'
+// SNEWS WYSIWYG EDITOR (HugeRTE: open-source fork of TinyMCE 6, MIT licence, no account and no API key)
+// The textarea stays the form field that is submitted. HugeRTE is loaded from the site's own js/hugerte/ folder;
+// when that folder is missing it is loaded from the jsDelivr CDN instead. If neither works, the textarea simply
+// stays visible as a plain HTML field, so editing is never blocked.
+function snews_editor(string $name = 'text', string $id = 'txt', string $value = '', string $label = ''): void {
+	static $script_loaded = false;
+
+	// Version of the files in js/hugerte/ (also used for the CDN fall-back address and as cache-buster).
+	$hr_version  = '1.0.15';
+	$hr_cdn_base = 'https://cdn.jsdelivr.net/npm/hugerte@' . $hr_version;
+	$hr_cdn_sri  = 'sha384-++SBz4ZNK6+Er6qC5+W/sGHuQz3OyR3PhHhoSCvXxuGruy5NYAaN4rkRfyZ1ne4o';
+
+	$local_dir = __DIR__ . '/js/hugerte';
+	$use_local = is_file($local_dir . '/hugerte.min.js');
+	$base_url  = $use_local ? _SITE . 'js/hugerte' : $hr_cdn_base;
+
+	$id_attr   = htmlspecialchars($id, ENT_QUOTES, 'UTF-8');
+	$name_attr = htmlspecialchars($name, ENT_QUOTES, 'UTF-8');
+
+	// Language of the editor interface. The packs are in js/hugerte/langs/; English is built in.
+	$site_lang = strtolower((string)s('language'));
+	$hr_langs  = ['nl' => 'nl', 'de' => 'de', 'fr' => 'fr_FR', 'es' => 'es', 'it' => 'it'];
+	$nl        = ($site_lang === 'nl');
+
+	$texts = [
+		'breakText'   => $nl ? 'Lees meer' : 'Read more',
+		'breakTip'    => $nl ? 'Lees-meer scheiding invoegen ([break])' : 'Insert read-more break ([break])',
+		'breakExists' => $nl ? 'Er staat al een [break] in de tekst.' : 'The text already contains a [break].',
 	];
-	
-	foreach ($insert as $key => $val) {
-		$lng = explode(',', $val);
-		$lng0 = $lng[0] ?? '';
-		$lng1 = $lng[1] ?? '';
-		
-		echo '<input type="button" name="' . htmlspecialchars($key, ENT_QUOTES, 'UTF-8') . '" title="' . htmlspecialchars(l($key), ENT_QUOTES, 'UTF-8') . '" class="buttons" onclick="tag(\'' . htmlspecialchars($key, ENT_QUOTES, 'UTF-8') . '\',\'' . htmlspecialchars(l($lng0), ENT_QUOTES, 'UTF-8') . '\',\'' . htmlspecialchars(l($lng1), ENT_QUOTES, 'UTF-8') . '\')" value="' . htmlspecialchars(l($key . '_value'), ENT_QUOTES, 'UTF-8') . '" />';
+
+	// Same look as the text area the site used before (colours and sizes from style.css)
+	$content_style = 'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#24292f;margin:12px 16px;}'
+		. 'p{margin:0 0 1em 0;}'
+		. 'h2,h3,h4{color:#a62300;margin:1.2em 0 .5em 0;font-weight:700;}'
+		. 'h2{font-size:1.45em;border-bottom:1px solid #eaeef2;padding-bottom:4px;}h3{font-size:1.25em;}h4{font-size:1.1em;}'
+		. 'ul,ol{margin:0 0 1.2em 2em;padding:0;}li{margin-bottom:.35em;}'
+		. 'a{color:#0969da;text-decoration:underline;}'
+		. 'img{max-width:100%;height:auto;border-radius:4px;}'
+		. 'blockquote{border-left:4px solid #0969da;margin:1.2em 0;padding:8px 16px;background:#f6f8fa;color:#57606a;border-radius:0 4px 4px 0;}'
+		. 'table{border-collapse:collapse;}td,th{border:1px solid #d0d7de;padding:4px 8px;}';
+
+	$config = [
+		'selector'                     => '#' . preg_replace('/[^A-Za-z0-9_-]/', '', $id),
+		// Where HugeRTE finds its own files (theme, skin, icons, plugins, languages)
+		'base_url'                     => $base_url,
+		'suffix'                       => '.min',
+		'plugins'                      => 'lists link image media table code fullscreen autoresize wordcount charmap searchreplace',
+		'menubar'                      => 'edit view insert format tools table',
+		'toolbar'                      => 'undo redo | blocks | bold italic underline strikethrough | bullist numlist blockquote | link image media table | snewsbreak | removeformat | code fullscreen',
+		'block_formats'                => $nl
+			? 'Paragraaf=p; Kop 2=h2; Kop 3=h3; Kop 4=h4; Citaat=blockquote'
+			: 'Paragraph=p; Heading 2=h2; Heading 3=h3; Heading 4=h4; Quote=blockquote',
+		'min_height'                   => 380,
+		'max_height'                   => 800,
+		'browser_spellcheck'           => true,
+		// Store the text exactly as typed: only & < > " are written as entities, links are not rewritten
+		'entity_encoding'              => 'raw',
+		'convert_urls'                 => false,
+		'relative_urls'                => false,
+		'remove_script_host'           => false,
+		'link_assume_external_targets' => 'https',
+		'paste_data_images'            => false,
+		'content_style'                => $content_style,
+	];
+	if ($use_local && isset($hr_langs[$site_lang]) && is_file($local_dir . '/langs/' . $hr_langs[$site_lang] . '.js')) {
+		$config['language']     = $hr_langs[$site_lang];
+		$config['language_url'] = $base_url . '/langs/' . $hr_langs[$site_lang] . '.js';
 	}
-	echo '<br class="clearer" /></p>';
+
+	$js_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+
+	echo '<div class="snews-editor-container">';
+	if ($label !== '') {
+		echo '<p class="snews-editor-label"><label for="' . $id_attr . '"><strong>' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . ':</strong></label></p>';
+	}
+
+	// This textarea is what the form submits. HugeRTE hides it and keeps it in sync;
+	// if HugeRTE cannot load (files missing, offline) it simply stays visible as a plain HTML field.
+	echo '<textarea name="' . $name_attr . '" id="' . $id_attr . '" class="snews-editor-textarea" rows="15" cols="100">' . htmlspecialchars($value, ENT_QUOTES, 'UTF-8') . '</textarea>';
+	echo '</div>';
+
+	if (!$script_loaded) {
+		if ($use_local) {
+			echo '<script src="' . htmlspecialchars($base_url, ENT_QUOTES, 'UTF-8') . '/hugerte.min.js?v=' . rawurlencode($hr_version) . '"></script>';
+		} else {
+			// Pinned version + integrity hash: the browser refuses the file if it was changed.
+			echo '<script src="' . htmlspecialchars($hr_cdn_base, ENT_QUOTES, 'UTF-8') . '/hugerte.min.js" integrity="' . $hr_cdn_sri . '" crossorigin="anonymous" referrerpolicy="no-referrer"></script>';
+		}
+		$script_loaded = true;
+	}
+
+	echo '<script>
+(function () {
+	if (typeof hugerte === "undefined") { return; }
+	var T = ' . json_encode($texts, $js_flags) . ';
+	var cfg = ' . json_encode($config, $js_flags) . ';
+	cfg.setup = function (editor) {
+		// sNews "read more" marker: the front end cuts the article at the text [break]
+		editor.ui.registry.addButton("snewsbreak", {
+			text: T.breakText,
+			tooltip: T.breakTip,
+			icon: "page-break",
+			onAction: function () {
+				if (editor.getContent({ format: "text" }).indexOf("[break]") !== -1) {
+					editor.notificationManager.open({ text: T.breakExists, type: "warning", timeout: 4000 });
+					return;
+				}
+				editor.insertContent("<p>[break]</p>");
+			}
+		});
+		// keep the textarea up to date so the form always submits the current text
+		editor.on("change input undo redo", function () { editor.save(); });
+	};
+	hugerte.init(cfg);
+})();
+</script>';
 }
 
 // ARTICLES FORM (PHP 8.1 safe: Herschreven naar PDO Prepared Statements en explicit variable scopes)
@@ -758,7 +860,7 @@ function form_articles(string $contents): void {
 		$frm_action = _SITE . '?action=process&task=admin_article&id=' . $id;
 		$frm_title = $_SESSION[_SITE . 'temp']['title'] ?? $title;
 		$frm_sef_title = isset($_SESSION[_SITE . 'temp']['seftitle']) ? cleanSEF($_SESSION[_SITE . 'temp']['seftitle']) : $seftitle;
-		$frm_text = isset($_SESSION[_SITE . 'temp']['text']) ? str_replace('&', '&amp;', (string)$_SESSION[_SITE . 'temp']['text']) : $text;
+		$frm_text = isset($_SESSION[_SITE . 'temp']['text']) ? (string)$_SESSION[_SITE . 'temp']['text'] : $text;
 		$frm_meta_desc = isset($_SESSION[_SITE . 'temp']['description_meta']) ? cleanSEF($_SESSION[_SITE . 'temp']['description_meta']) : $dmeta;
 		$frm_meta_key = isset($_SESSION[_SITE . 'temp']['keywords_meta']) ? cleanSEF($_SESSION[_SITE . 'temp']['keywords_meta']) : $keywords;
 		
@@ -824,6 +926,7 @@ function form_articles(string $contents): void {
 		echo htmlspecialchars(l('create_cat'), ENT_QUOTES, 'UTF-8');
 	} else {
 		echo html_input('form', '', 'post', '', '', '', '', '', '', '', '', '', 'post', $frm_action, '');
+		echo csrf_field();
 		echo '<div class="adminpanel">';
 		
 		if (!empty($toggle_div) && $toggle_div === 'show') {
@@ -843,8 +946,7 @@ function form_articles(string $contents): void {
 			echo html_input('text', 'seftitle', 'as', $frm_sef_title, l('sef_title'), '', '', '', '', '', '', '', '', '', '');
 		}
 		
-		echo html_input('textarea', 'text', 'txt', $frm_text, l('text'), '', '', '', '', '', '2', '100', '', '', '');
-		buttons();
+		snews_editor('text', 'txt', $frm_text, l('text'));
 
 				# ARTICLE OR EXTRA (PHP 8.1 safe: prepared loops en scope-initialisatie)
 		$contents_str = (string)($contents ?? '');
@@ -1055,8 +1157,8 @@ function printArticleDetails(array $articleData, string $articleClass, mixed $or
 	}
 	
 	$visiblity = (string)($articleData['visible'] ?? 'YES') === 'YES' ?
-		'<a href="' . _SITE . '?action=hide&amp;item=' . htmlspecialchars($articleClass, ENT_QUOTES, 'UTF-8') . '&amp;id=' . (int)$articleData['id'] . '">' . l('hide') . '</a>' :
-		l('hidden') . ' ( <a href="' . _SITE . '?action=show&amp;item=' . htmlspecialchars($articleClass, ENT_QUOTES, 'UTF-8') . '&amp;id=' . (int)$articleData['id'] . '">' . l('show') . '</a> )';
+		'<a href="' . _SITE . '?action=hide&amp;item=' . htmlspecialchars($articleClass, ENT_QUOTES, 'UTF-8') . '&amp;id=' . (int)$articleData['id'] . '&amp;' . csrf_query() . '">' . l('hide') . '</a>' :
+		l('hidden') . ' ( <a href="' . _SITE . '?action=show&amp;item=' . htmlspecialchars($articleClass, ENT_QUOTES, 'UTF-8') . '&amp;id=' . (int)$articleData['id'] . '&amp;' . csrf_query() . '">' . l('show') . '</a> )';
 		
 	echo ' ' . l('divider') . ' ' . $visiblity;
 	
@@ -1209,6 +1311,7 @@ function admin_articles(string $contents): void {
 	$no_content = !empty($filterquery) ? '<p>' . htmlspecialchars(l('no_content_for_filter'), ENT_QUOTES, 'UTF-8') . '</p>' : '<p>' . htmlspecialchars(l('article_not_exist'), ENT_QUOTES, 'UTF-8') . '</p>';
 	
 	echo html_input('form', '', 'post', '', '', '', '', '', '', '', '', '', 'post', '?action=process&amp;task=reorder', '');
+	echo csrf_field();
 	echo '<div class="adminpanel">';
 	echo '<p class="admintitle">' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . $add . '</p>';
 	echo '<p><input type="hidden" name="order" id="order" value="' . htmlspecialchars($goto, ENT_QUOTES, 'UTF-8') . '" /></p>';
@@ -1253,7 +1356,7 @@ function admin_articles(string $contents): void {
 						if ($cat_value_int === -3 && $lbl_filter !== (int)$r['page_extra']) {
 							$assigned_page_res = retrieve('title', 'articles', 'id', $r['page_extra']);
 							$assigned_page = is_array($assigned_page_res) ? ($assigned_page_res['title'] ?? '') : (string)$assigned_page_res;
-							echo !$assigned_page ? htmlspecialchars(l('all_pages'), ENT_QUOTES, 'UTF-8') : htmlspecialchars($assigned_page, ENT_QUOTES, 'UTF-8');
+							echo '<p><strong>' . (!$assigned_page ? htmlspecialchars(l('all_pages'), ENT_QUOTES, 'UTF-8') : htmlspecialchars($assigned_page, ENT_QUOTES, 'UTF-8')) . '</strong></p>';
 							}
 
 
@@ -1265,7 +1368,7 @@ function admin_articles(string $contents): void {
 						echo $no_content;
 						}
 						}
-						echo '';
+						echo '</div>';
 						}
 						}
 
@@ -1429,6 +1532,7 @@ function edit_comment(): void {
 			$comment = str_replace('<br />', '', $comment);
 			
 			echo html_input('form', '', 'post', '', '', '', '', '', '', '', '', '', 'post', '?action=process&amp;task=editcomment&amp;id=' . $commentid, '');
+			echo csrf_field();
 			echo '<div class="adminpanel">';
 			echo '<p class="admintitle">' . l('edit_comment') . ' (<strong> ' . htmlspecialchars($articleTITLE, ENT_QUOTES, 'UTF-8') . '</strong> )</p>';
 			echo html_input('textarea', 'editedcomment', 'ec', $comment, l('comment'), '', '', '', '', '', '2', '100', '', '', '');
@@ -1448,62 +1552,164 @@ function edit_comment(): void {
 	} catch (PDOException $e) {}
 }
 
-// FILES (PHP 8.1 safe: move_uploaded_file fix, strict type vergelijkingen & variable scopes)
+// ---- FILE MANAGER HELPERS ----
+// Extensions that can never be uploaded, whatever the "allowed files" setting says.
+function blocked_upload_extension(string $ext): bool
+{
+	static $blocked = ['php', 'php2', 'php3', 'php4', 'php5', 'php6', 'php7', 'php8', 'phtml', 'pht', 'phtm', 'phar', 'phps', 'pgif',
+		'shtml', 'shtm', 'cgi', 'pl', 'py', 'rb', 'sh', 'bash', 'asp', 'aspx', 'jsp', 'jspx', 'cfm', 'exe', 'dll', 'bat', 'cmd', 'com',
+		'htaccess', 'htpasswd', 'ini', 'user', 'inc'];
+	return in_array(strtolower(ltrim($ext, '.')), $blocked, true);
+}
+
+// A clean file name: lower case letters, digits, dot, dash and underscore only.
+function safe_upload_name(string $name): string
+{
+	$name = strtolower(basename(str_replace('\\', '/', $name)));
+	$name = preg_replace('/[^a-z0-9._-]/', '-', $name) ?? '';
+	$name = preg_replace('/-{2,}/', '-', $name) ?? '';
+	return trim(ltrim($name, '.'), '-');
+}
+
+// "shell.php.jpg" is dangerous on some server set-ups, so every part of the name is checked.
+function upload_has_blocked_ext(string $filename): bool
+{
+	$parts = explode('.', $filename);
+	array_shift($parts);
+	foreach ($parts as $part) {
+		if (blocked_upload_extension($part)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// Resolve a path and make sure it is inside the site folder. (A plain strpos() prefix test also accepts
+// a sibling folder such as /var/www/site2 when the site is /var/www/site, so compare with a separator.)
+function path_inside_base(string $path): ?string
+{
+	$base = realpath('.');
+	$real = realpath($path);
+	if ($base === false || $real === false) {
+		return null;
+	}
+	if ($real === $base || str_starts_with($real, $base . DIRECTORY_SEPARATOR)) {
+		return $real;
+	}
+	return null;
+}
+
+// Folders that hold code or private data: nothing may be uploaded into or deleted from them.
+function protected_upload_dir(string $real_dir): bool
+{
+	$base = realpath('.');
+	if ($base === false) {
+		return true;
+	}
+	$rel = trim(str_replace('\\', '/', substr($real_dir, strlen($base))), '/');
+	$first = strtolower(explode('/', $rel)[0] ?? '');
+	return in_array($first, ['addons', 'lang', 'sql', 'logs', 'backups'], true);
+}
+
+// FILES
 function files(): void {
+	echo csrf_field();
 	$upload_file = isset($_POST['upload']) ? $_POST['upload'] : null;
 	$remote_addr = $_SERVER['REMOTE_ADDR'] ?? '';
 	
 	$ip = (isset($_POST['ip']) && $_POST['ip'] === $remote_addr) ? $_POST['ip'] : null;
 	$time = (isset($_POST['time']) && (time() - (int)$_POST['time']) > 4) ? $_POST['time'] : null;
+
+	$ignore = explode(',', l('ignored_items'));
+	$allowed_ext = array_filter(array_map(
+		static fn($e) => strtolower(trim($e)),
+		array_merge(explode(',', (string)s('allowed_files')), explode(',', (string)s('allowed_images')))
+	), static fn($e) => $e !== '' && !blocked_upload_extension($e));
 	
 	if ($ip && $time && $upload_file && _ADMIN) {
-		$ignore = explode(',', l('ignored_items'));
-		$file_types = explode(',', (string)s('allowed_files'));
-		$image_types = explode(',', (string)s('allowed_images'));
-		$extension = array_merge($file_types, $image_types);
+
+		if (!csrf_check()) {
+			die('CSRF validation failed');
+		}
 		
 		if (!empty($_FILES['imagefile']['name']) && !empty($_FILES['imagefile']['tmp_name'])) {
-			$filetemp = $_FILES['imagefile']['tmp_name'];
-			$filename = strtolower(basename($_FILES['imagefile']['name']));
-			$filetype = $_FILES['imagefile']['type'];
+			$filetemp = (string)$_FILES['imagefile']['tmp_name'];
+			$filename = safe_upload_name((string)$_FILES['imagefile']['name']);
+			$upload_error = (int)($_FILES['imagefile']['error'] ?? UPLOAD_ERR_NO_FILE);
 			
 			$ext_check = strrchr($filename, '.');
 			$file_ext = $ext_check !== false ? substr($ext_check, 1) : '';
 			
-			if (!in_array($file_ext, $extension, true) || in_array($filename, $ignore, true)) {
+			if ($upload_error !== UPLOAD_ERR_OK || $filename === '' || !is_uploaded_file($filetemp)
+				|| !in_array($file_ext, $allowed_ext, true) || blocked_upload_extension($file_ext)
+				|| upload_has_blocked_ext($filename) || in_array($filename, $ignore, true)) {
 				die(notification(2, l('file_error'), 'snews_files'));
+			}
+
+			// Content checks: images must really be images, and no file may contain PHP code.
+			if (in_array($file_ext, ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'], true) && @getimagesize($filetemp) === false) {
+				die(notification(2, l('file_error'), 'snews_files'));
+			}
+			$head = (string)@file_get_contents($filetemp, false, null, 0, 8192);
+			if (preg_match('/<\?(?:php|=)/i', $head)) {
+				die(notification(2, l('file_error'), 'snews_files'));
+			}
+			$filetype = class_exists('finfo') ? (string)(new finfo(FILEINFO_MIME_TYPE))->file($filetemp) : 'unknown';
+
+			$upload_dir = str_replace('\\', '/', (string)($_POST['upload_dir'] ?? '.'));
+			$targetDir = path_inside_base($upload_dir);
+			if ($targetDir === null || !is_dir($targetDir) || protected_upload_dir($targetDir)) {
+				die(notification(2, l('error_file_name'), 'snews_files'));
+			}
+
+			$target_path = $targetDir . DIRECTORY_SEPARATOR . $filename;
+
+			if (move_uploaded_file($filetemp, $target_path)) {
+				@chmod($target_path, 0644);
+				echo notification(0, '', 'snews_files');
+				$kb_size = round(($_FILES['imagefile']['size'] / 1024), 1);
+				$rel_path = ltrim(str_replace('\\', '/', substr($target_path, strlen((string)realpath('.')))), '/');
+				$rel_url = str_replace('%2F', '/', rawurlencode($rel_path));
+				echo '<p><a href="' . htmlspecialchars(_SITE . $rel_url, ENT_QUOTES, 'UTF-8') . '" title="' . htmlspecialchars($filename, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($filename, ENT_QUOTES, 'UTF-8') . '</a> [' . $kb_size . ' KB] [' . htmlspecialchars($filetype, ENT_QUOTES, 'UTF-8') . ']</p>';
 			} else {
-				$upload_dir = rtrim((string)($_POST['upload_dir'] ?? '.'), '/');
-				
-				// Beveiliging: zorg dat de directory validatie klopt
-				if (!preg_match('/^[a-z0-9_\-.\/]+$/i', $upload_dir)) {
-					die(notification(2, l('error_file_name'), 'snews_files'));
-				}
-				
-				$target_path = $upload_dir . '/' . $filename;
-				
-				// FIX: copy() vervangen door de verplichte move_uploaded_file() standaard
-				if (move_uploaded_file($filetemp, $target_path)) {
-					echo notification(0, '', 'snews_files');
-					$kb_size = round(($_FILES['imagefile']['size'] / 1024), 1);
-					echo '<p><a href="' . htmlspecialchars($target_path, ENT_QUOTES, 'UTF-8') . '" title="' . htmlspecialchars($filename, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($filename, ENT_QUOTES, 'UTF-8') . '</a> [' . $kb_size . ' KB] [' . htmlspecialchars($filetype, ENT_QUOTES, 'UTF-8') . ']</p>';
-				} else {
-					die(l('file_error'));
-				}
+				die(l('file_error'));
 			}
 		} else {
 			die(notification(2, l('file_error'), 'snews_files'));
 		}
 	} else {
-		// FIX: isset check en taakvergelijking opgesplitst om PHP 8.1 logic warnings te voorkomen
-		if (isset($_GET['task']) && $_GET['task'] === 'delete' && isset($_GET['folder']) && isset($_GET['file'])) {
-			$folder_clean = preg_replace('/[^a-zA-Z0-9_\-.\/]/', '', $_GET['folder']);
-			$file_clean = preg_replace('/[^a-zA-Z0-9_\-.]/', '', $_GET['file']);
-			
-			$file_to_delete = rtrim($folder_clean, '/') . '/' . $file_clean;
-			if (file_exists($file_to_delete) && is_file($file_to_delete)) {
-				@unlink($file_to_delete);
+		if (
+			_ADMIN &&
+			isset($_GET['task']) &&
+			$_GET['task'] === 'delete' &&
+			isset($_GET['folder']) &&
+			isset($_GET['file'])
+		) {
+			// Deleting is a state change done through a link, so it needs the CSRF token.
+			if (!csrf_check_get()) {
+				die('CSRF validation failed');
 			}
+
+			$folder = str_replace('\\', '/', (string)$_GET['folder']);
+			$file   = basename((string)$_GET['file']);
+			$ext    = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+
+			$targetDir = path_inside_base($folder);
+			if ($targetDir === null || protected_upload_dir($targetDir)) {
+				die('Access denied');
+			}
+
+			// Only the file types the file manager lists may be deleted: never config.php, index.php, .htaccess, ...
+			if (in_array($file, $ignore, true) || !in_array($ext, $allowed_ext, true) || blocked_upload_extension($ext)) {
+				die('Access denied');
+			}
+
+			$fileToDelete = $targetDir . DIRECTORY_SEPARATOR . $file;
+
+			if (is_file($fileToDelete) && !is_link($fileToDelete)) {
+				unlink($fileToDelete);
+			}
+
 			echo notification(0, '', 'snews_files');
 		} else {
 			$upload_dir_post = (string)($_POST['upload_dir'] ?? '');
@@ -1511,6 +1717,7 @@ function files(): void {
 			echo '<div class="adminpanel">';
 			echo '<p class="admintitle">' . l('upload') . '</p>';
 			echo '<form method="post" action="' . _SITE . 'snews_files/" enctype="multipart/form-data">';
+			echo csrf_field();
 			echo '<p>' . l('uploadto') . '&nbsp;&nbsp;&nbsp;<select name="upload_dir" id="ud1">';
 			echo '<option value=".">..</option>';
 			filelist('option', ".");
@@ -1524,17 +1731,18 @@ function files(): void {
 			$dir_title = empty($upload_dir_post) ? ' root' : ' ' . str_replace('.', 'root', htmlspecialchars($upload_dir_post, ENT_QUOTES, 'UTF-8'));
 			echo '<p class="admintitle">' . l('view_files') . $dir_title . '</p>';
 			echo '<form method="post" action="' . _SITE . 'snews_files/" enctype="multipart/form-data">';
+			echo csrf_field();
 			echo '<p><select name="upload_dir" id="ud2"><option value=".">..</option>';
 			filelist('option', ".");
 			echo '</select>';
 			
-			// FIX: Loze variabele $file gedefinieerd als lege string om warnings te voorkomen
 			echo html_input('hidden', 'file', 'file', '', '', '', '', '', '', '', '', '', '', '', '');
 			echo html_input('hidden', 'ip', 'ip2', $remote_addr, '', '', '', '', '', '', '', '', '', '', '');
 			echo html_input('hidden', 'time', 'time2', (string)time(), '', '', '', '', '', '', '', '', '', '', '');
 			echo html_input('submit', 'show', 'show', l('view'), '', 'button', '', '', '', '', '', '', '', '', '');
 			
-			$handle = (strlen($upload_dir_post) > 2) ? $upload_dir_post : ".";
+			// Only folders inside the site folder may be listed.
+			$handle = (strlen($upload_dir_post) > 2 && path_inside_base(str_replace('\\', '/', $upload_dir_post)) !== null) ? $upload_dir_post : ".";
 			echo '</p><p>';
 			filelist('list', $handle);
 			echo '</p></form></div>';
@@ -1570,7 +1778,7 @@ function filelist(string $mode, string $path, int $depth = 0): void {
 						$ext = $ext_check !== false ? substr($ext_check, 1) : '';
 						if (in_array($ext, $types, true)) {
 							echo '<a href="' . htmlspecialchars($target, ENT_QUOTES, 'UTF-8') . '" title="' . l('view') . ' ' . htmlspecialchars($file, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($file, ENT_QUOTES, 'UTF-8') . '</a> ' . l('divider') . ' ';
-							echo '<a href="' . _SITE . '?action=snews_files&amp;task=delete&amp;folder=' . urlencode($path) . '&amp;file=' . urlencode($file) . '" title="' . l('delete') . ' ' . htmlspecialchars($file, ENT_QUOTES, 'UTF-8') . '" onclick="return pop(\'' . htmlspecialchars(l('js_delete2'), ENT_QUOTES, 'UTF-8') . '\')"> ' . l('delete') . '</a><br />';
+							echo '<a href="' . _SITE . '?action=snews_files&amp;task=delete&amp;folder=' . urlencode($path) . '&amp;file=' . urlencode($file) . '&amp;' . csrf_query() . '" title="' . l('delete') . ' ' . htmlspecialchars($file, ENT_QUOTES, 'UTF-8') . '" onclick="return pop(\'' . htmlspecialchars(l('js_delete2'), ENT_QUOTES, 'UTF-8') . '\')"> ' . l('delete') . '</a><br />';
 						}
 						break;
 				}
@@ -1672,13 +1880,17 @@ function visibility(string $mode): void {
 		return;
 	}
 
+	if (!csrf_check_get()) {
+		die('CSRF validation failed');
+	}
+
 	$get_id = isset($_GET['id']) ? (string)$_GET['id'] : '0';
 	$id = (int)cleanXSS($get_id);
 	
 	$get_item = isset($_GET['item']) ? (string)$_GET['item'] : '';
 	$item = cleanXSS($get_item);
 	
-	$back = isset($_GET['back']) ? (string)$_GET['back'] : '';
+	$back = isset($_GET['back']) ? preg_replace('/[^A-Za-z0-9_\-\/]/', '', (string)$_GET['back']) : '';
 	$no_yes = ($mode === 'hide') ? 'NO' : 'YES';
 	
 	// Initialiseer variabelen vooraf om PHP 8.1 Undefined Variable warnings te voorkomen
@@ -1752,7 +1964,7 @@ function processing(): void {
 	$post_commentid = isset($_POST['commentid']) ? (string)$_POST['commentid'] : '0';
 	$commentid = (int)cleanXSS($post_commentid, true);
 	
-	$approved = (isset($_POST['approved']) && $_POST['approved'] === 'on') ? 'True' : '';
+	$approved = (isset($_POST['approved']) && ($_POST['approved'] === 'on' || $_POST['approved'] === 'YES')) ? 'True' : '';
 	$name = isset($_POST['name']) ? clean(entity($_POST['name'])) : '';
 	
 	$post_def_cat = isset($_POST['define_category']) ? (string)$_POST['define_category'] : '0';
@@ -1779,22 +1991,22 @@ function processing(): void {
 	$description_meta = isset($_POST['description_meta']) ? entity($_POST['description_meta']) : '';
 	$keywords_meta = isset($_POST['keywords_meta']) ? entity($_POST['keywords_meta']) : '';
 	
-	$display_title = (isset($_POST['display_title']) && $_POST['display_title'] === 'on') ? 'YES' : 'NO';
-	$display_info = (isset($_POST['display_info']) && $_POST['display_info'] === 'on') ? 'YES' : 'NO';
-	$commentable = (isset($_POST['commentable']) && $_POST['commentable'] === 'on') ? 'YES' : 'NO';
-	$freez = (isset($_POST['freeze']) && $_POST['freeze'] === 'on') ? 'YES' : 'NO';
+	$display_title = (isset($_POST['display_title']) && ($_POST['display_title'] === 'on' || $_POST['display_title'] === 'YES')) ? 'YES' : 'NO';
+	$display_info = (isset($_POST['display_info']) && ($_POST['display_info'] === 'on' || $_POST['display_info'] === 'YES')) ? 'YES' : 'NO';
+	$commentable = (isset($_POST['commentable']) && ($_POST['commentable'] === 'on' || $_POST['commentable'] === 'YES')) ? 'YES' : 'NO';
+	$freez = (isset($_POST['freeze']) && ($_POST['freeze'] === 'on' || $_POST['freeze'] === 'YES')) ? 'YES' : 'NO';
 	
 	if ($freez === 'YES' && $commentable === 'YES') {
 		$commentable = 'FREEZ';
 	}
 	
 	$position = (isset($_POST['position']) && (int)$_POST['position'] > 0) ? (int)$_POST['position'] : 1;
-	$publish_article = (isset($_POST['publish_article']) && $_POST['publish_article'] === 'on') ? 1 : 0;
-	$show_in_subcats = (isset($_POST['show_in_subcats']) && $_POST['show_in_subcats'] === 'on') ? 'YES' : 'NO';
-	$show_on_home = ((isset($_POST['show_on_home']) && $_POST['show_on_home'] === 'on') || $position > 1) ? 'YES' : 'NO';
-	$publish_category = (isset($_POST['publish']) && $_POST['publish'] === 'on') ? 'YES' : 'NO';
+	$publish_article = (isset($_POST['publish_article']) && ($_POST['publish_article'] === 'on' || $_POST['publish_article'] === 'YES')) ? 1 : 0;
+	$show_in_subcats = (isset($_POST['show_in_subcats']) && ($_POST['show_in_subcats'] === 'on' || $_POST['show_in_subcats'] === 'YES')) ? 'YES' : 'NO';
+	$show_on_home = ((isset($_POST['show_on_home']) && ($_POST['show_on_home'] === 'on' || $_POST['show_on_home'] === 'YES')) || $position > 1) ? 'YES' : 'NO';
+	$publish_category = (isset($_POST['publish']) && ($_POST['publish'] === 'on' || $_POST['publish'] === 'YES')) ? 'YES' : 'NO';
 	
-	$fpost_enabled = (isset($_POST['fposting']) && $_POST['fposting'] === 'on');
+	$fpost_enabled = (isset($_POST['fposting']) && ($_POST['fposting'] === 'on' || $_POST['fposting'] === 'YES'));
 	if ($fpost_enabled) {
 		$f_year   = (int)($_POST['fposting_year'] ?? date('Y'));
 		$f_month  = (int)($_POST['fposting_month'] ?? date('m'));
@@ -1812,6 +2024,11 @@ function processing(): void {
 	$task = isset($_POST['task']) ? cleanXSS((string)$_POST['task']) : '';
 	
 	if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST)) {
+
+		if (!csrf_check()) {
+			die('CSRF validation failed');
+		}
+
 		switch ($task) {
 			case 'save_settings':
 				if (isset($_POST['save'])) {
@@ -1844,16 +2061,57 @@ function processing(): void {
 					$word_filter_file = (string)($_POST['word_filter_file'] ?? '');
 					$word_filter_change = (string)($_POST['word_filter_change'] ?? '');
 					
-					$enable_extras = (isset($_POST['enable_extras']) && $_POST['enable_extras'] === 'on') ? 'YES' : 'NO';
-					$enable_comments = (isset($_POST['enable_comments']) && $_POST['enable_comments'] === 'on') ? 'YES' : 'NO';
+					$enable_extras = (isset($_POST['enable_extras']) && ($_POST['enable_extras'] === 'on' || $_POST['enable_extras'] === 'YES')) ? 'YES' : 'NO';
+					$enable_comments = (isset($_POST['enable_comments']) && ($_POST['enable_comments'] === 'on' || $_POST['enable_comments'] === 'YES')) ? 'YES' : 'NO';
 					
 					$comment_repost_timer = (isset($_POST['comment_repost_timer']) && is_numeric($_POST['comment_repost_timer'])) ? (int)$_POST['comment_repost_timer'] : 15;
-					$freeze_comments = (isset($_POST['freeze_comments']) && $_POST['freeze_comments'] === 'on') ? 'YES' : 'NO';
+					$freeze_comments = (isset($_POST['freeze_comments']) && ($_POST['freeze_comments'] === 'on' || $_POST['freeze_comments'] === 'YES')) ? 'YES' : 'NO';
 					
 					$file_ext = (string)($_POST['file_ext'] ?? '');
 					$allowed_file = (string)($_POST['allowed_file'] ?? '');
 					$allowed_img = (string)($_POST['allowed_img'] ?? '');
-					
+
+					// ---- Validate the values before they are stored (they drive file paths, uploads and SQL limits) ----
+					// Language: must be an existing file in lang/ (it is included with require).
+					if (!preg_match('/^[A-Za-z0-9_-]{1,20}$/', $language) || !is_file('lang/' . $language . '.php')) {
+						$language = (string)s('language') !== '' ? (string)s('language') : 'EN';
+					}
+					$charset = preg_match('/^[A-Za-z0-9_-]{2,20}$/', $charset) ? $charset : 'UTF-8';
+					$date_format = preg_match('/^[A-Za-z0-9 .,:\/\-_\\\\]{0,40}$/', $date_format) ? $date_format : 'd.m.Y. H:i';
+					$article_limit = (string)max(1, min(100, (int)$article_limit));
+					$rss_limit = (string)max(1, min(100, (int)$rss_limit));
+					$display_page = (string)max(0, (int)$display_page);
+					$comment_limit = (string)max(1, min(500, (int)$comment_limit));
+					$comments_order = strtoupper($comments_order) === 'DESC' ? 'DESC' : 'ASC';
+					$onoff = static fn(string $v): string => $v === 'on' ? 'on' : '';
+					$display_new_on_home = $onoff($display_new_on_home);
+					$display_pagination = $onoff($display_pagination);
+					$num_categories = $onoff($num_categories);
+					$show_cat_names = $onoff($show_cat_names);
+					$approve_comments = $onoff($approve_comments);
+					$mail_on_comments = $onoff($mail_on_comments);
+					$word_filter_enable = $onoff($word_filter_enable);
+					// Word filter file: a relative path inside the site folder only.
+					if ($word_filter_file !== '' && (!preg_match('#^[A-Za-z0-9_./-]{1,100}$#', $word_filter_file)
+						|| str_contains($word_filter_file, '..') || $word_filter_file[0] === '/')) {
+						$word_filter_file = '';
+					}
+					// File type lists: plain extensions only, and never a server-side script type.
+					$clean_ext_list = static function (string $list): string {
+						$out = [];
+						foreach (explode(',', $list) as $e) {
+							$e = strtolower(trim($e));
+							if ($e === '' || !preg_match('/^[a-z0-9]{1,10}$/', $e) || blocked_upload_extension($e)) {
+								continue;
+							}
+							$out[$e] = $e;
+						}
+						return implode(',', $out);
+					};
+					$file_ext = $clean_ext_list($file_ext);
+					$allowed_file = $clean_ext_list($allowed_file);
+					$allowed_img = $clean_ext_list($allowed_img);
+
 					$ufield = array(
 						'website_title'        => $website_title,
 						'home_sef'             => $home_sef,
@@ -1888,14 +2146,23 @@ function processing(): void {
 					);
 					
 					// FIX: De brekende list() = each() lus vervangen door een up-to-date foreach-constructie
+					// A setting that has no row yet (for example enable_comments on an older database) is created,
+					// otherwise the UPDATE would silently do nothing and the option could never be saved.
 					$sql = "UPDATE " . _PRE . "settings SET value = :val WHERE name = :name";
 					try {
 						$stmt = $database->prepare($sql);
+						$exists = $database->prepare("SELECT COUNT(*) FROM " . _PRE . "settings WHERE name = :name");
+						$insert = $database->prepare("INSERT INTO " . _PRE . "settings (name, value) VALUES (:name, :val)");
 						foreach ($ufield as $key => $value) {
-							$stmt->execute([
-								':val'  => $value,
-								':name' => $key
-							]);
+							$exists->execute([':name' => $key]);
+							if ((int)$exists->fetchColumn() === 0) {
+								$insert->execute([':name' => $key, ':val' => $value]);
+							} else {
+								$stmt->execute([
+									':val'  => $value,
+									':name' => $key
+								]);
+							}
 						}
 					} catch (PDOException $e) {
 						// database error tijdens opslaan settings
@@ -1911,12 +2178,21 @@ function processing(): void {
 						case 'changeup':
 					if (isset($_POST['submit_pass'])) {
 						$user = checkUserPass($_POST['uname'] ?? '');
-						$pass1 = checkUserPass($_POST['pass1'] ?? '');
-						$pass2 = checkUserPass($_POST['pass2'] ?? '');
-						
-						if ($user && $pass1 && $pass2 && $pass1 === $pass2) {
-							$uname = md5($user);
-							$pass = md5($pass2);
+						$pass1 = checkPassword($_POST['pass1'] ?? '', true);
+						$pass2 = checkPassword($_POST['pass2'] ?? '', true);
+
+						// The current password must be confirmed (protects a left-open admin session).
+						$current_raw = isset($_POST['pass_current']) && is_string($_POST['pass_current']) ? $_POST['pass_current'] : '';
+						$current_legacy = checkUserPass($current_raw);
+						$stored_hash = (string)s('password');
+						$current_ok = $current_raw !== '' && (
+							password_verify($current_raw, $stored_hash)
+							|| ($current_legacy !== null && password_verify($current_legacy, $stored_hash))
+						);
+
+						if ($user && $pass1 && $pass2 && $pass1 === $pass2 && $pass1 !== $user && $current_ok) {
+							$uname = $user;
+							$pass = password_hash($pass2, PASSWORD_DEFAULT);
 							
 							# USERNAME UPDATE via zuivere PDO execute
 							$q1 = "UPDATE " . _PRE . "settings SET value = :val WHERE name = :name";
@@ -1937,7 +2213,13 @@ function processing(): void {
 									':name' => 'password'
 								]);
 							} catch (PDOException $e) {}
-							
+
+							// New credentials: start a fresh session id and CSRF token.
+							session_regenerate_id(true);
+							$_SESSION[_SITE . 'Logged_In'] = token();
+							$_SESSION[_SITE . 'last_active'] = time();
+							unset($_SESSION['csrf_token']);
+
 							echo notification(0, '', 'administration');
 						} else {
 							// FIX: Voorkom een harde script-crash via die(), gebruik return
@@ -2114,7 +2396,7 @@ function processing(): void {
 									if ($any_subcats > 0 || $any_articles > 0) {
 										echo notification(1, l('warn_catnotempty'), '');
 										echo '<p><a href="' . _SITE . 'administration/" title="' . htmlspecialchars(l('administration'), ENT_QUOTES, 'UTF-8') . '">' . l('administration') . '</a>  OR  ';
-										echo '<a href="' . _SITE . '?action=process&amp;task=delete_category_all&amp;id=' . (int)$id . '" ';
+										echo '<a href="' . _SITE . '?action=process&amp;task=delete_category_all&amp;id=' . (int)$id . '&amp;' . csrf_query() . '" ';
 										echo 'onclick="return pop(\'' . htmlspecialchars(l('js_delete1'), ENT_QUOTES, 'UTF-8') . '\')" title="' . htmlspecialchars(l('administration'), ENT_QUOTES, 'UTF-8') . '">';
 										echo htmlspecialchars(l('empty_cat'), ENT_QUOTES, 'UTF-8') . '</a></p>';
 										$no_success = true;
@@ -2436,7 +2718,16 @@ function processing(): void {
 				case 'editcomment':
 					$commentid = (int)($commentid ?? 0);
 					$name = (string)($name ?? '');
-					$url = (string)($url ?? '');
+					$url = trim((string)($url ?? ''));
+					if ($url !== '') {
+						if (stripos($url, 'www.') === 0) {
+							$url = 'http://' . $url;
+						}
+						$url_scheme = strtolower((string)parse_url($url, PHP_URL_SCHEME));
+						if (filter_var($url, FILTER_VALIDATE_URL) === false || !in_array($url_scheme, ['http', 'https'], true) || strlen($url) > 100) {
+							$url = '';
+						}
+					}
 					$comment = (string)($comment ?? '');
 					$approved = (string)($approved ?? '');
 
@@ -2475,6 +2766,9 @@ function processing(): void {
 					break;
 			}
 		} elseif (!empty($_GET) && isset($action) && $action === 'process') {
+			if (!csrf_check_get()) {
+				die('CSRF validation failed');
+			}
 			$get_task = isset($_GET['task']) ? (string)$_GET['task'] : '';
 			$task = cleanXSS($get_task);
 			switch ($task) {
