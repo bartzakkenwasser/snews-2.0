@@ -164,7 +164,7 @@ INSERT INTO `settings` (`id`, `name`, `value`) VALUES
 (7, 'language', 'EN'),
 (8, 'charset', 'UTF-8'),
 (9, 'date_format', 'd.m.Y. H:i'),
-(10, 'article_limit', '3'),
+(10, 'article_limit', '10'),
 (11, 'rss_limit', '5'),
 (12, 'display_page', '0'),
 (13, 'display_new_on_home', ''),
@@ -181,12 +181,12 @@ INSERT INTO `settings` (`id`, `name`, `value`) VALUES
 (24, 'word_filter_enable', ''),
 (25, 'word_filter_file', ''),
 (26, 'word_filter_change', ''),
-(27, 'username', '21232f297a57a5a743894a0e4a801fc3'),
-(28, 'password', '21232f297a57a5a743894a0e4a801fc3'),
+(27, 'username', 'admin'),
+(28, 'password', '$2y$10$uy0yvbOXgr1h7L3B6GGXPupENxqKESFbnzIClUvWCYd5uq/941lLm'),
 (29, 'enable_extras', 'NO'),
 (30, 'last_date', '2026-10-26 12:29:45'),
-(31, 'file_extensions', 'phps,php,txt,inc,htm,html'),
-(32, 'allowed_files', 'php,htm,html,txt,inc,css,js,swf'),
+(31, 'file_extensions', 'txt,htm,html'),
+(32, 'allowed_files', 'htm,html,txt,css,js'),
 (33, 'allowed_images', 'gif,jpg,jpeg,png');
 
 --
