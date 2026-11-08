@@ -2,12 +2,6 @@ I was working on this snews18 cms project. I noticed there is something wrong wi
 I restored the username and the password in the setup file for creating the database. The most important, I upgraded a lot of code to work with PHP version 8.1. 
 because all sNews versions where  very outdated.
 
-10/26 11:25
-There were two separate blockers:
-1.	The database stored plaintext credentials. settings rows 27/28 contained test/test, but verify_login() compares md5($input) against the stored value, so plaintext can never match. I replaced both with 098f6bcd4621d373cade4e832627b4f6, which is md5('test').
-2.	A SECURE_ID mismatch caused the ACCESS DENIED after login. config.php:19 defines SECURE_ID, but snews.php:198 was reading key_ID, leaving the constant empty; admin.php:13 then killed the admin include with ACCESS DENIED. It now reads SECURE_ID with a legacy key_ID fallback, and the admin guard accepts whatever key config.php provides instead of hardcoding 1234.
-Database backup from before the change: snews18_before_login_fix_20261026_112726.sql. It is blocked from HTTP access with backups/.htaccess (returns 403).
-One note: the installer file SQL/snews18.sql seeds now admin / admin, also as/with an MD5 hash (so no longer test/test)— so re-importing it would reset the login to admin / admin
 
 10/26 11:34
 There was an error on the homepage.
@@ -25,7 +19,7 @@ Verified:
 •	Admin login and /administration/ → 200, no ACCESS DENIED
 •	/snews_settings/ → 200
 
-One heads-up: the settings table currently contains the hash for admin / admin, not test / test — it changed since the earlier fix, presumably via the Settings page. I verified the admin login with admin / admin.
+One heads-up: the settings table currently contains the hash and salt for admin / admin, not test / test — it changed since the earlier fix, presumably via the Settings page. I verified the admin login with admin / admin.
 Usage 1.2M tok10/26 11:35
 
 Question: Suppose a transfer the files (and the database) to a shared hosting are the login credentials admin, admin then preserved?
@@ -33,9 +27,10 @@ Question: Suppose a transfer the files (and the database) to a shared hosting ar
 
 Yes — admin / admin will still work after migration, because the login is stored in the database (in the settings table), not in the files. The settings table contains:
 Code block
-username = 21232f297a57a5a743894a0e4a801fc3   
-password = 21232f297a57a5a743894a0e4a801fc3
+username = admin   
+password = $2y$10$uy0yvbOXgr1h7L3B6GGXPupENxqKESFbnzIClUvWCYd5uq/941lLm
 Both admin / admin
+Keep in mind that the username is plain text and the password is hashed and salted.
 
 A full export/import of the snews18 database preserves those rows exactly. A fresh install from SQL/snews18.sql:136 also seeds the same admin/admin hashes — but that script drops and recreates tables, so don’t run it over the live data.
 
@@ -48,12 +43,23 @@ Migration checklist
 6.	Log in again on the new domain. The old browser session won’t transfer, but the credentials will.
 
 Important before uploading
-config.php is currently served as plain text at http://localhost/snews18/config.php (HTTP 200), exposing the database password, SECURE_ID, and string_hash. On shared hosting, that is publicly readable unless you block it.
+config.php is currently served as plain text at http://localhost/snews18/config.php (HTTP 200), exposing the database password, SECURE_ID, and string_hash. On shared hosting, that is publicly readable unless you block it. This is done in the .htaccess file.
 
 At minimum, add this to .htaccess:
 Code block
-<FilesMatch "^(config\.php|databasetest\.php|snews\.db3|.*\.sql)$">
-    Require all denied
+# ----------------------------------------------------------------------------
+# 1. Block direct HTTP access to sensitive files
+# ----------------------------------------------------------------------------
+# config.php is an INI file, not a PHP script. Without this block, a request
+# to /config.php can print the database password in plain text.
+<FilesMatch "(?i)^(config\.php|databasetest\.php|test\.php|phpinfo\.php|snews\.db3|.*?\.(?:sql|sqlite3?|db3?|log|bak|backup|old|orig|swp|swo|ini|env|inc|phps|dump|tmp|temp|save|sav)|.*~|error_log|composer\.(?:json|lock)|package(?:-lock)?\.json|yarn\.lock|htaccess\.txt|app\.py|passenger_wsgi\.py)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
 </FilesMatch>
 
 PHP can still read config.php from disk; this only blocks HTTP access. Also remove or relocate:
@@ -62,7 +68,7 @@ PHP can still read config.php from disk; this only blocks HTTP access. Also remo
 •	backups/ — contains a full database dump.
 •	logs/ — development files.
 Note that .htaccess is ignored on Nginx; on an Nginx host, use the hosting panel’s “deny” rules or move these files above public_html.
-Also, admin/admin is a weak credential and the hashes are unsalted MD5. The change-password form currently only accepts 4–13 alphanumeric characters (snews.php:287), so a strong passphrase won’t work until that limit is relaxed. I can harden the .htaccess, remove the dev-only files, and widen the password rules if you want.
+Also, admin/admin is a weak credential and the hashes are stronger then the MD5 but change them immediately after install. The change-password form currently only accepts 4–13 alphanumeric characters (snews.php:287), so a strong passphrase won’t work until that limit is relaxed. 
 10/26 11:40
 
 Question: I see that I still have the 404 error on the homepage: “HTTP 404 The content you requested could not be found and may not exist. Please choose from content listed below or return to the previous page.” And the address bar shows: http://localhost/snews18/404/ Can you fix that?
