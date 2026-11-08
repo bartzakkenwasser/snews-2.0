@@ -4,11 +4,12 @@ padding:0;
 }
 
 body {
-font:.75em Verdana, Arial, Sans-Serif;
-color:#272727;
-line-height:1.8em;
-background:#fff;
+    font:.95em Verdana, Arial, Sans-Serif;
+    color: #272727;
+    line-height: 1.8em;
+    background: #fff;
 }
+
 
 p {
 line-height:1.6em;
@@ -56,7 +57,7 @@ margin:1.2em 0 .5em;
 
 #wrapper {
 width:100%;
-max-width:940px;
+max-width:1040px;
 background:#fff;
 margin:0 auto 10px;
 padding:20px;
@@ -165,13 +166,13 @@ margin-left:30px;
 }
 
 #main {
-width:56%;
+width:61%;
 float:left;
 margin-bottom:40px;
 }
 
 #side {
-width:40%;
+width:36%;
 float:right;
 }
 
@@ -257,7 +258,7 @@ padding:10px;
 
 .comment_limit {
 white-space: pre-line;
-width: 490px;
+width: 100%;
 overflow: hidden;
 text-overflow: visible;
 }
@@ -542,3 +543,89 @@ padding:10px 8px;
 }
 }
 
+
+
+/* ==========================================================================
+   sNews article editor (TinyMCE)
+   The editor is loaded from Tiny Cloud by snews_editor() in admin.php.
+   These rules style the wrapper, the label, the Tiny frame and the plain
+   textarea that shows when TinyMCE cannot load. The look of the text INSIDE
+   the editor is set in the content_style option of snews_editor().
+   ========================================================================== */
+
+.snews-editor-container {
+    margin: 12px 0 16px 0;
+    box-sizing: border-box;
+    width: 100%;
+}
+
+.snews-editor-label {
+    margin: 0 0 6px 0;
+    font-size: 14px;
+    color: #222;
+}
+
+/* Frame around the editor */
+.snews-editor-container .tox.tox-tinymce {
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    box-shadow: none;
+}
+
+.snews-editor-container .tox.tox-tinymce:focus-within {
+    border-color: #0969da;
+    box-shadow: 0 0 0 1px #0969da;
+}
+
+/* Toolbar area */
+.snews-editor-container .tox .tox-editor-header {
+    background: #f7f8f9;
+    border-bottom: 1px solid #e1e4e8;
+}
+
+/* Plain HTML textarea: only visible when TinyMCE could not load (TinyMCE hides it when it starts) */
+.snews-editor-textarea {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 320px;
+    padding: 14px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 13px;
+    line-height: 1.55;
+    background: #1e1e1e;
+    color: #e6edf3;
+    outline: none;
+    resize: vertical;
+    margin: 0;
+}
+
+.snews-editor-textarea:focus {
+    border-color: #0969da;
+}
+
+/* Duidelijke klikbare "Lees meer" knop voor ingekorte artikelen */
+.snews-readmore {
+    margin: 14px 0 18px 0;
+}
+
+.snews-readmore a {
+    display: inline-block;
+    padding: 7px 16px;
+    background: #a62300;
+    color: #ffffff !important;
+    text-decoration: none !important;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 13px;
+    line-height: 1.4;
+    transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+.snews-readmore a:hover {
+    background: #7d1a00;
+    color: #ffffff !important;
+    transform: translateY(-1px);
+}
