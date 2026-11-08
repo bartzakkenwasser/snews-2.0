@@ -76,7 +76,7 @@ function load_lang() {
 
 	#generic links
 	$l['backhome'] = 'Back home';
-	$l['read_more'] = 'Continue reading';
+	$l['read_more'] = 'Read more';
 
 	#contents error
 	$l['article_not_exist'] = 'No content at this time';
@@ -135,7 +135,7 @@ function load_lang() {
 	$l['login'] = 'Login';
 	$l['username'] = 'Username';
 	$l['password'] = 'Password';
-	$l['login_limit'] = 'User/pass limitations: 4-13 alphanumeric characters only';
+	$l['login_limit'] = 'Username: 4-13 letters and digits only. New password: at least 10 characters (any characters).';
 	$l['logged_in'] = 'You are Logged In';
 	$l['log_out'] = 'Logging out';
 	$l['logout'] = 'Logout';
@@ -263,7 +263,9 @@ function load_lang() {
 	$l['newer_top'] = 'Newer on top';
 	$l['newer_bottom'] = 'Newer on bottom';
 	$l['err_Login'] = 'Wrong username and/or password and/or sum entered.';
-	$l['pass_mismatch'] = 'Passwords are outside length limit or do not match';
+	$l['pass_mismatch'] = 'The current password is wrong, the new passwords do not match, or the new password is shorter than 10 characters.';
+	$l['current_password'] = 'Current password';
+	$l['login_locked'] = 'Too many failed login attempts. Please try again in 15 minutes.';
 	$l['a_username'] = 'Username';
 	$l['a_password'] = 'Password';
 	$l['a_password2'] = 'Repeat password';
