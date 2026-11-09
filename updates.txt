@@ -1,8 +1,8 @@
-sNews 1.80 Reborn - Test drive
+sNews 2.0 Revisited - Test drive
 
 Updates - for final version
 -------------------------
-*** 14 May ***
+*** 14 May 2016 ***
 - Javascript rewrite focus and verified by lint (Noje + Gulp + gulp-jshint)
 - Javascript compressed (compress.js) same as admin.js
 - [update_articles] fixed
@@ -10,18 +10,18 @@ Updates - for final version
 - variable: artorder fixed on articles
 
 
-*** 27 May ***
+*** 27 May 2016 ***
 Thanks to skiane - issue/commits/pull requests
 - [update_articles] - fixed support for sqlite and mysql
 - [site] - add support for https
 - [showAdmAddons] - Fix add name in admin section
 
-*** 29 May ***
+*** 29 May 2016 ***
 - remove block "# DELETE ARTICLES FROM SUB-CATEGORY" in admin.php not used
 - improved lisibility by skiane and Rui
 - title replaced by seftitleby @RobsWebsites - fixed by skiane
 
-*** 30 May ***
+*** 30 May 2016 ***
 - [search] - Skiane report "fixed number of search result (uninitialized var)"
 - With this Pull I found an issue for non existing query 
 - Repport and issue fixed - Now is working for mysql and sqlite
@@ -32,12 +32,12 @@ Thanks to skiane - issue/commits/pull requests
 - delete comments when user delete a article
 - css add ".contactbox" in same style (commentsbox)
 
-*** 01 June ***
+*** 01 June 2016 ***
 - [update_articles] modify db()->fetch() to db()->exec(...)
 - [checkUserPass] some change
 - empty limitation with php by skiane
 
-*** 12 June ***
+*** 12 June 2016 ***
 - [cleanXSS] - function modified
 - [transformTags] - New function - to transform tags
 - [clean_link] - New function - to convert link to BBCode Link
@@ -51,15 +51,15 @@ It is different if you search for "snews color", in this case both words must ma
 - [XSS_cache] removed
 - filter_var and filter_input will be WIP (work in progress)
 
-*** 17 June *** by skiane
+*** 17 June 2016 *** by skiane
 - Fixed a bug in Addons list that caused a bug when more than 1 addon is loaded
 - removed (some) unused variables
 
-*** 23 June *** by skiane
+*** 23 June 2016 *** by skiane
 [printArticleDetails] New function
 - Factorize code-> [admin_articles]
 
-*** 02 July *** by skiane & Rui
+*** 02 July 2016 *** by skiane & Rui
 - Javascript add more dependancy for def_subcat - Extra now show "Show in Subcategories" only Categorie for all or for one category
 - All queries review
 - [buttons] - img,link,include,func fixed remove text from javascript side and put in admin.php
@@ -71,17 +71,17 @@ It is different if you search for "snews color", in this case both words must ma
 - [articles] - Better syntax with bool expression
 - simplified language file loading code - change include langfile to require.
 
-*** 03 July *** by Skiane & Rui
+*** 03 July 2016 *** by Skiane & Rui
 - removed unused var (center, rss-feeds, menu_articles && center)
 - move global $l from readAddons to addon (hello)
 - processing - admin_article - fixed - Bug in article deletion with extra
 - processing - admin_article - fixed - when change page to extra/article then reset extra pointer to this page
 
-*** 10 July *** by Skiane
+*** 10 July 2016 *** by Skiane
 - Introduced "routes" to map SEFs to php functions
 
-*** 21 July *** by Skiane and Rui
-- fix:14 July (admin)
+*** 21 July 2016 *** by Skiane and Rui
+- fix:14 July 2016 (admin)
 - No MathCaptcha For Admin
 - Addroute - Undefined constant - fixed converted to string
 - [clean_mysql] moved to admin.php
@@ -95,10 +95,10 @@ It is different if you search for "snews color", in this case both words must ma
 - ADD option "page_list" in config for user can choose order
 - [pages] changed to support order page list
 
-*** 22 July *** By Rui
+*** 22 July 2016 *** By Rui
 - Refine switch from [center]
 
-*** 24 July *** By Skiane and Rui
+*** 24 July 2016 *** By Skiane and Rui
 - SET sitemap, contact and archive as addon
 - Removed temp from unset var
 - [center] move some code to admin
