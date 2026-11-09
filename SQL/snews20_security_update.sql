@@ -1,5 +1,5 @@
 -- -----------------------------------------------------------------------------
---  sNews 1.80 - security update for an EXISTING database (run it in phpMyAdmin -> SQL)
+--  sNews 2.0 - security update for an EXISTING database (run it in phpMyAdmin -> SQL)
 --  Does NOT drop or re-create anything. Review each statement before running it.
 -- -----------------------------------------------------------------------------
 USE `snews18`;
