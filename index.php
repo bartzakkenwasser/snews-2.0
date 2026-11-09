@@ -2,14 +2,13 @@
 /*------------------------------------------------------------------------------
   sNews Version:	2.0 - Official (Gecorrigeerd voor PHP 8.1+)
   CodeName:     	REVISITED
-  Last Update:		2026 Modernization (Gecorrigeerd voor PHP 8.1+)
+  Last Update:		November 2026 Modernization (Gecorrigeerd voor PHP 8.1+)
   Developers: 		Rui Mendes, Stephane Fritsch(Skiane), Nukpana
   Thanks to:		  @RobsWebsites
   Copyright (C):	Solucija.com
   Licence:      	sNews is licensed under a Creative Commons License.
   Revised by:     zakkenwasser
 -------------------------------------------------------------------------------- */
-<?php
 ob_start();
 // SECURITY: never show errors to visitors (they reveal file paths, queries and sometimes credentials).
 // Errors go to the PHP error log. Set display_errors to '1' only temporarily while debugging.
