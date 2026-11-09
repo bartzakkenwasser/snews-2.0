@@ -12,7 +12,7 @@
 --  Optimized and modernised for MySQL 8.x / MariaDB 10.x (XAMPP 2026)
 -- -----------------------------------------------------------------------------
 
--- Zorg dat je rechten hebt om een database aan te maken.
+-- Zorg dat je rechten hebt om een database aan te maken
 -- CRUCIALE FIX: Maak de database eerst fysiek aan als deze nog niet bestaat
 CREATE DATABASE IF NOT EXISTS `snews18` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
