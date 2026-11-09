@@ -14,7 +14,7 @@
 
 -- Zorg dat je rechten hebt om een database aan te maken
 -- CRUCIALE FIX: Maak de database eerst fysiek aan als deze nog niet bestaat
-CREATE DATABASE IF NOT EXISTS `snews18` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS `snews20` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- Selecteer de zojuist aangemaakte database zodat de tabellen erin landen
 USE `snews20`;
