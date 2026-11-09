@@ -1,10 +1,10 @@
-# sNews 1.81
+# sNews 2.0
 
 
 ## Codename: sNews Revisited!
 
 
-Welcome to [sNews] 1.81 a template independant, PHP and Database powered, standards compliant Content Management System (CMS). 
+Welcome to [sNews] 2.0 a template independant, PHP and Database powered, standards compliant Content Management System (CMS). 
 
 sNews consists of the following files:
   - One engine file (snews.php)
