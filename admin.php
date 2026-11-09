@@ -10,7 +10,6 @@
   Licence:      	sNews is licensed under a Creative Commons License.
   Revised by:		zakkenwasser , 2026
 -------------------------------------------------------------------------------- */
-<?php
 // SECURITY: errors are logged, never shown to visitors.
 ini_set('display_errors', '0');
 ini_set('display_startup_errors', '0');
@@ -689,7 +688,19 @@ function snews_editor(string $name = 'text', string $id = 'txt', string $value =
 		'breakText'   => $nl ? 'Lees meer' : 'Read more',
 		'breakTip'    => $nl ? 'Lees-meer scheiding invoegen ([break])' : 'Insert read-more break ([break])',
 		'breakExists' => $nl ? 'Er staat al een [break] in de tekst.' : 'The text already contains a [break].',
+		'uploadFailed' => $nl ? 'Uploaden mislukt.' : 'Upload failed.',
+		'browseTitle'  => $nl ? 'Kies een afbeelding' : 'Choose an image',
+		'browseFilter' => $nl ? 'Zoeken op bestandsnaam...' : 'Search by file name...',
+		'browseEmpty'  => $nl ? 'Er staan nog geen afbeeldingen in de map images. Gebruik het tabblad Uploaden om er een toe te voegen.' : 'There are no pictures in the images folder yet. Use the Upload tab to add one.',
+		'browseNone'   => $nl ? 'Geen afbeeldingen gevonden.' : 'No pictures found.',
+		'browseFailed' => $nl ? 'De lijst met afbeeldingen kon niet worden opgehaald.' : 'The list of pictures could not be loaded.',
+		'browseMore'   => $nl ? 'Alleen de nieuwste afbeeldingen worden getoond. Gebruik het zoekveld.' : 'Only the newest pictures are shown. Use the search box.',
+		'cancel'       => $nl ? 'Annuleren' : 'Cancel',
 	];
+
+	// Picture upload: editor_upload.php (same folder as index.php) saves the picture in the images/ folder.
+	// It is only switched on when that file exists; without it the image dialog just asks for a web address.
+	$upload_url = is_file(__DIR__ . '/editor_upload.php') ? _SITE . 'editor_upload.php' : '';
 
 	// Same look as the text area the site used before (colours and sizes from style.css)
 	$content_style = 'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#24292f;margin:12px 16px;}'
@@ -722,9 +733,17 @@ function snews_editor(string $name = 'text', string $id = 'txt', string $value =
 		'relative_urls'                => false,
 		'remove_script_host'           => false,
 		'link_assume_external_targets' => 'https',
-		'paste_data_images'            => false,
 		'content_style'                => $content_style,
 	];
+	if ($upload_url !== '') {
+		// Adds an "Upload" tab to the image dialog; pictures that are pasted or dragged into the text are uploaded too.
+		$config['automatic_uploads']     = true;
+		$config['paste_data_images']     = true;
+		$config['images_reuse_filename'] = true;
+		$config['images_file_types']     = 'jpg,jpeg,png,gif,webp';
+	} else {
+		$config['paste_data_images'] = false;
+	}
 	if ($use_local && isset($hr_langs[$site_lang]) && is_file($local_dir . '/langs/' . $hr_langs[$site_lang] . '.js')) {
 		$config['language']     = $hr_langs[$site_lang];
 		$config['language_url'] = $base_url . '/langs/' . $hr_langs[$site_lang] . '.js';
@@ -757,6 +776,121 @@ function snews_editor(string $name = 'text', string $id = 'txt', string $value =
 	if (typeof hugerte === "undefined") { return; }
 	var T = ' . json_encode($texts, $js_flags) . ';
 	var cfg = ' . json_encode($config, $js_flags) . ';
+	var UPLOAD_URL = ' . json_encode($upload_url, $js_flags) . ';
+	var CSRF = ' . json_encode(csrf_token(), $js_flags) . ';
+	if (UPLOAD_URL) {
+		// Sends the picture to editor_upload.php together with the CSRF token and returns its new address.
+		cfg.images_upload_handler = function (blobInfo, progress) {
+			return new Promise(function (resolve, reject) {
+				var fail = function (message) { reject({ message: message || T.uploadFailed, remove: true }); };
+				var xhr = new XMLHttpRequest();
+				xhr.open("POST", UPLOAD_URL);
+				xhr.withCredentials = true;
+				xhr.upload.onprogress = function (e) { if (e.lengthComputable) { progress(e.loaded / e.total * 100); } };
+				xhr.onerror = function () { fail(T.uploadFailed); };
+				xhr.onload = function () {
+					var json = null;
+					try { json = JSON.parse(xhr.responseText); } catch (e) { return fail(T.uploadFailed); }
+					if (xhr.status < 200 || xhr.status >= 300 || !json || typeof json.location !== "string") {
+						return fail(json && json.error && json.error.message);
+					}
+					resolve(json.location);
+				};
+				var form = new FormData();
+				form.append("csrf_token", CSRF);
+				form.append("file", blobInfo.blob(), blobInfo.filename());
+				xhr.send(form);
+			});
+		};
+
+		// "Browse existing images": a folder button next to the address field of the image dialog opens a gallery
+		// of the pictures that are already in the images/ folder (the list comes from editor_upload.php).
+		var esc = function (s) {
+			return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/\x27/g, "&#39;");
+		};
+		if (!document.getElementById("snews-gallery-css")) {
+			var css = document.createElement("style");
+			css.id = "snews-gallery-css";
+			css.textContent =
+				".snews-gallery-filter{box-sizing:border-box;width:100%;padding:8px 10px;margin:0 0 10px 0;border:1px solid #c4c9d0;border-radius:4px;font:inherit}" +
+				".snews-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;max-height:52vh;overflow:auto;padding:2px}" +
+				".snews-gallery-item{display:block;margin:0;padding:6px;background:#fff;border:1px solid #d0d7de;border-radius:6px;cursor:pointer;text-align:center;font:inherit}" +
+				".snews-gallery-item:hover,.snews-gallery-item:focus{border-color:#0969da;outline:2px solid #0969da;outline-offset:0}" +
+				".snews-gallery-item img{display:block;width:100%;height:96px;object-fit:contain;background:#f3f4f6;border-radius:3px}" +
+				".snews-gallery-item span{display:block;margin-top:5px;font-size:12px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+				".snews-gallery-item small{display:block;font-size:11px;color:#6b7280}" +
+				".snews-gallery-msg{margin:6px 0;color:#57606a}";
+			document.head.appendChild(css);
+		}
+		cfg.file_picker_types = "image";
+		cfg.file_picker_callback = function (callback, value, meta) {
+			var editor = hugerte.activeEditor;
+			var form = new FormData();
+			form.append("csrf_token", CSRF);
+			form.append("action", "list");
+			fetch(UPLOAD_URL, { method: "POST", body: form, credentials: "same-origin" })
+				.then(function (r) { return r.json().then(function (j) { return { ok: r.ok, json: j }; }); })
+				.then(function (res) {
+					if (!res.ok || !res.json || !Array.isArray(res.json.images)) { throw new Error("list"); }
+					var images = res.json.images, html = "";
+					if (images.length === 0) {
+						html = "<p class=\"snews-gallery-msg\">" + esc(T.browseEmpty) + "</p>";
+					} else {
+						html = "<input type=\"search\" class=\"snews-gallery-filter\" placeholder=\"" + esc(T.browseFilter) + "\" autocomplete=\"off\">" +
+							"<p class=\"snews-gallery-msg snews-gallery-none\" style=\"display:none\">" + esc(T.browseNone) + "</p>" +
+							"<div class=\"snews-gallery\">";
+						images.forEach(function (im) {
+							var kb = Math.max(1, Math.round(im.size / 1024));
+							html += "<button type=\"button\" class=\"snews-gallery-item\" data-url=\"" + esc(im.url) + "\" data-name=\"" + esc(im.name) + "\">" +
+								"<img src=\"" + esc(im.url) + "\" alt=\"\" loading=\"lazy\">" +
+								"<span title=\"" + esc(im.name) + "\">" + esc(im.name) + "</span><small>" + kb + " KB</small></button>";
+						});
+						html += "</div>";
+						if (res.json.truncated) { html += "<p class=\"snews-gallery-msg\">" + esc(T.browseMore) + "</p>"; }
+					}
+					var onClick = function (e) {
+						var item = e.target.closest ? e.target.closest(".snews-gallery-item") : null;
+						if (!item) { return; }
+						e.preventDefault();
+						var name = item.getAttribute("data-name") || "";
+						var alt = name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ");
+						var url = item.getAttribute("data-url");
+						dialog.close();
+						callback(url, { alt: alt });
+					};
+					var onInput = function (e) {
+						var filter = e.target;
+						if (!filter.classList || !filter.classList.contains("snews-gallery-filter")) { return; }
+						var wrap = filter.closest(".snews-gallery-wrap");
+						if (!wrap) { return; }
+						var q = filter.value.toLowerCase(), shown = 0;
+						wrap.querySelectorAll(".snews-gallery-item").forEach(function (el) {
+							var hit = (el.getAttribute("data-name") || "").toLowerCase().indexOf(q) !== -1;
+							el.style.display = hit ? "" : "none";
+							if (hit) { shown++; }
+						});
+						var none = wrap.querySelector(".snews-gallery-none");
+						if (none) { none.style.display = shown === 0 ? "" : "none"; }
+					};
+					// Listeners on the page itself (they do not depend on when the dialog is drawn); removed again on close.
+					document.addEventListener("click", onClick, true);
+					document.addEventListener("input", onInput, true);
+					var dialog = editor.windowManager.open({
+						title: T.browseTitle,
+						size: "large",
+						body: { type: "panel", items: [{ type: "htmlpanel", html: "<div class=\"snews-gallery-wrap\">" + html + "</div>" }] },
+						buttons: [{ type: "cancel", text: T.cancel }],
+						onClose: function () {
+							document.removeEventListener("click", onClick, true);
+							document.removeEventListener("input", onInput, true);
+						}
+					});
+				})
+				.catch(function () {
+					editor.notificationManager.open({ text: T.browseFailed, type: "error", timeout: 5000 });
+				});
+		};
+	}
 	cfg.setup = function (editor) {
 		// sNews "read more" marker: the front end cuts the article at the text [break]
 		editor.ui.registry.addButton("snewsbreak", {
