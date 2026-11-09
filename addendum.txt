@@ -8,7 +8,9 @@ The most important, I upgraded a lot of code to work with PHP version 8.1. becau
 
 10/26 11:34
 There was an error on the homepage. Fixed.
+
 Homepage fixed — it now returns HTTP 200 and renders the latest articles.
+
 The home route uses $_TYPE = 8, but articles() only treated 4, 5, and 7 as valid listing types. I made three changes in snews.php:
 •	Line 1454: allow _TYPE === 8 through the guard instead of calling set_error().
 •	Line 1455: count home articles using "show_on_home = 'YES' AND position = 1".
@@ -16,10 +18,10 @@ The home route uses $_TYPE = 8, but articles() only treated 4, 5, and 7 as valid
 
 
 Verified:
-•	/snews18/ → 200, shows “Welcome to sNews 1.8”, no Error: 404
+•	/snews18/ → 200, shows “Welcome to sNews 2.0”, no Error: 404
 •	Article page, login, archive, contact, and sitemap → all 200
-•	When logged in as Admin you can go to  /administration/ → 200, no ACCESS DENIED
-•	When logged in as Admin you can go to /snews_settings/ → 200, no ACCESS DENIED
+•	When logged in as admin you can go to  /administration/ → 200, no ACCESS DENIED
+•	When logged in as admin you can go to /snews_settings/ → 200, no ACCESS DENIED
 
 One heads-up: the settings table currently contains the hash and salt for admin / admin, not test / test — I changed it since the earlier fix, directly via the database in the settings table. I verified the admin login with admin / admin. You have to change that to your own preferences and safety.
 
@@ -33,7 +35,7 @@ password = $2y$10$uy0yvbOXgr1h7L3B6GGXPupENxqKESFbnzIClUvWCYd5uq/941lLm
 Both admin / admin
 Keep in mind that the username is plain text and the password is hashed and salted.
 
-A full export/import of the snews18 database preserves those rows exactly. A fresh install from SQL/snews18.sql:136 also seeds the same admin/admin hashes — but that script drops and recreates tables, so don’t run it over the live data.
+A full export/import of the snews2.0 database preserves those rows exactly. A fresh install from SQL/snews18.sql:136 also seeds the same admin/admin hashes — but that script drops and recreates tables, so don’t run it over the live data.
 
 Migration checklist
 1.	Update the database settings in config.php — localhost, snews18, root, and geheim will not exist on the shared host. Use the host’s DB host, database name, username, and password instead.
