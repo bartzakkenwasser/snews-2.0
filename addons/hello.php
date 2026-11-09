@@ -33,16 +33,16 @@ function public_hello() {
 
 /* EXPLANATION */
 // --> FILE INSIDE ADDON FOLDER
-// --> FILENAME IS hello not hello.php (ignore .php)
+// --> FILENAME IS 'hello' not hello.php (ignore .php)
 
-// USAGE FOR PUBLIC
-// http://localhost/snews1.80/[filename]/
+// USAGE FOR LOCAL (on localhost)
+// http://localhost/snews20/[filename]/
 // USAGE FOR ADMIN
-// http://localhost/snews1.80/?action=admin_[filename]
+// http://localhost/snews20/?action=admin_[filename]
 
 
 // IN THIS EXAMPLE
-// http://localhost/snews1.80/hello/
-// http://localhost/snews1.80/?action=admin_hello
+// http://localhost/snews20/hello/
+// http://localhost/snews20/?action=admin_hello
 
 ?>
