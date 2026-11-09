@@ -2,3057 +2,2699 @@
 /*------------------------------------------------------------------------------
   sNews Version:	2.0 - Official (Gecorrigeerd voor PHP 8.1+)
   CodeName:     	REVISITED
-  Last Update:		november 2026 Modernization (Gecorrigeerd voor PHP 8.1+)
+  Last Update:		November 2026 Modernization (Gecorrigeerd voor PHP 8.1+)
   Developers: 		Rui Mendes, Stephane Fritsch(Skiane), Nukpana
   Thanks to:		@RobsWebsites
   Copyright (C):	Solucija.com
-  Last Update:		november 2026 Modernization (Gecorrigeerd voor PHP 8.1+)
   Licence:      	sNews is licensed under a Creative Commons License.
-  Revised by:		zakkenwasser , 2026
+  Revised by:		zakkenwasser
 -------------------------------------------------------------------------------- */
-// SECURITY: errors are logged, never shown to visitors.
+
+// SECURITY: never show PHP errors to visitors (they leak file paths, SQL and sometimes credentials).
+// Errors are written to the PHP error log instead. Temporarily set display_errors to '1' only while debugging.
 ini_set('display_errors', '0');
 ini_set('display_startup_errors', '0');
 ini_set('log_errors', '1');
 error_reporting(E_ALL);
 
-// NO HACK PLEASE (Gecorrigeerd naar de veilige, cross-platform basename() functie)
-$pagename = basename($_SERVER['SCRIPT_NAME'] ?? '');
-if ($pagename === 'admin.php') {
-	die('Bye bye');
+if (session_status() === PHP_SESSION_NONE) {
+
+    $https_now = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off')
+        || strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https';
+
+    // Only accept session ids that the server created itself, and never put them in URLs.
+    ini_set('session.use_strict_mode', '1');
+    ini_set('session.use_only_cookies', '1');
+    ini_set('session.use_trans_sid', '0');
+
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path'     => '/',
+        'secure'   => $https_now,
+        'httponly' => true,
+        'samesite' => 'Strict'
+    ]);
+
+    session_start();
 }
 
-// SECURE_ID controle (wordt in snews.php uit config.php gezet)
-if (!defined('SECURE_ID') || SECURE_ID === '') { 
-	die('ACCESS DENIED');
+
+// RETURN INI FILE (PHP 8.1 compatible)
+function ini_value(string $section, string $key, string $file = 'config.php'): mixed
+{
+    static $ini, $array;
+    if ($ini !== $file) {
+        $ini = $file;
+        $array = file_exists($file) ? parse_ini_file($file, true) : [];
+    }
+    return $array[$section][$key] ?? '';
 }
 
-// NOT LOGGED - > ERROR (Veilig controleren van de constante)
-if (!defined('_ADMIN') || !_ADMIN) {
-	if (function_exists('notification')) {
-		echo notification(1, l('error_not_logged_in'), 'login');
-	}
-	if (function_exists('set_error')) {
-		set_error();
-	}
-	exit;
+// DATABASE CONNECTION (fixed options)
+function db(): ?PDO
+{
+    static $db = null;
+
+    if ($db === null) {
+        try {
+            $dsn = ini_value('DATABASE', 'dsn');
+            if (empty($dsn)) {
+                return null;
+            }
+
+            // Always pass a real empty array
+            $options = [];
+
+            $db = new PDO(
+                $dsn,
+                ini_value('DATABASE', 'user'),
+                ini_value('DATABASE', 'pass'),
+                $options
+            );
+
+            $db->setAttribute(PDO::ATTR_EMULATE_PREPARES, false);
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+
+        } catch (PDOException $e) {
+            // Never print the driver message: it can contain the DSN, user name and host.
+            error_log('sNews database connection error: ' . $e->getMessage());
+            if (!headers_sent()) {
+                http_response_code(503);
+            }
+            die('Database connection error.');
+        }
+    }
+
+    return $db;
 }
 
-// ADMINISTRATION
-function administration(): void {
-	// FIX: Herschreven naar de schone en veilige PHP 8.1 methode om POST data te resetten
-	$_POST = [];
+// FETCH
+function dbfetch(?PDOStatement $result, bool $prepared = false, array $args = []): mixed
+{
+    if (!$result) {
+        return null;
+    }
 
-	// Warn while the well-known install default (admin / admin) is still the login.
-	if ((string)s('username') === 'admin' && password_verify('admin', (string)s('password'))) {
-		$nl_warn = strtolower((string)s('language')) === 'nl';
-		$warn_title = $nl_warn ? 'Beveiligingswaarschuwing' : 'Security warning';
-		$warn_text = $nl_warn
-			? 'Je gebruikt nog de standaardlogin (admin / admin). Iedereen die dit weet kan inloggen. Wijzig nu de gebruikersnaam en het wachtwoord via Instellingen.'
-			: 'You are still using the default login (admin / admin). Anyone who knows this can log in. Change the username and password now under Settings.';
-		echo '<div class="adminpanel"><p class="admintitle" style="color:#c00000">' . htmlspecialchars($warn_title, ENT_QUOTES, 'UTF-8') . '</p>';
-		echo '<p>' . htmlspecialchars($warn_text, ENT_QUOTES, 'UTF-8') . ' <a href="' . _SITE . 'snews_settings/">' . htmlspecialchars(l('settings'), ENT_QUOTES, 'UTF-8') . '</a></p></div>';
-	}
-	
-	echo '<div class="adminpanel">';
-	echo '<p class="admintitle"><a href="http://snewscms.com/" title="sNews CMS">sNews</a> ' . htmlspecialchars(l('administration'), ENT_QUOTES, 'UTF-8') . '</p>';
-	echo '<p>' . htmlspecialchars(l('categories'), ENT_QUOTES, 'UTF-8') . ': <a href="' . _SITE . 'admin_category/">' . htmlspecialchars(l('add_new'), ENT_QUOTES, 'UTF-8') . '</a>';
-	
-	$link = ' ' . l('divider') . ' <a href="' . _SITE;
-	$catnum = stats('categories', '');
-	
-	if ($catnum > 0) {
-		echo $link . 'snews_categories/">' . htmlspecialchars(l('view'), ENT_QUOTES, 'UTF-8') . '</a>';
-	}
-	
-	echo '</p><p>' . htmlspecialchars(l('articles'), ENT_QUOTES, 'UTF-8') . ': ';
-	$art_new = $catnum > 0 ? '<a href="' . _SITE . 'article_new/">' . htmlspecialchars(l('add_new'), ENT_QUOTES, 'UTF-8') . '</a>' : htmlspecialchars(l('create_cat'), ENT_QUOTES, 'UTF-8');
-	echo $art_new;
-	
-	if (stats('articles', '1') > 0) {
-		echo $link . 'snews_articles/">' . htmlspecialchars(l('view'), ENT_QUOTES, 'UTF-8') . '</a>';
-	}
-	
-	echo '</p><p>' . htmlspecialchars(l('pages'), ENT_QUOTES, 'UTF-8') . ': <a href="' . _SITE . 'page_new/">' . htmlspecialchars(l('add_new'), ENT_QUOTES, 'UTF-8') . '</a>';
-	if (stats('articles', '3') > 0) {
-		echo $link . 'snews_pages/">' . htmlspecialchars(l('view'), ENT_QUOTES, 'UTF-8') . '</a>';
-	}
-	echo '</p>';
-	
-	if (s('enable_extras') === 'YES') {
-		echo '<p class="admintitle">' . htmlspecialchars(l('extra_contents'), ENT_QUOTES, 'UTF-8') . '</p>';
-		echo '<p>' . htmlspecialchars(l('groupings'), ENT_QUOTES, 'UTF-8') . ': <a href="' . _SITE . 'admin_groupings/">' . htmlspecialchars(l('add_new'), ENT_QUOTES, 'UTF-8') . '</a>';
-		if (stats('extras', '') > 0) {
-			echo $link . 'groupings/">' . htmlspecialchars(l('view'), ENT_QUOTES, 'UTF-8') . '</a>';
-		}
-		echo '</p>';
-	}
-	
-	echo '<p>' . htmlspecialchars(l('extra_contents'), ENT_QUOTES, 'UTF-8') . ': <a href="' . _SITE . 'extra_new/">' . htmlspecialchars(l('add_new'), ENT_QUOTES, 'UTF-8') . '</a>';
-	if (stats('articles', '2') > 0) {
-		echo $link . 'extra_contents/">' . htmlspecialchars(l('view'), ENT_QUOTES, 'UTF-8') . '</a>';
-	}
-	echo '</p>';
-	
-	# ADDONS
-	echo '<p>' . htmlspecialchars(l('admin_addons'), ENT_QUOTES, 'UTF-8') . ': ';
-	$addons = readAddons();
-	if (empty($addons)) {
-		echo htmlspecialchars(l('none'), ENT_QUOTES, 'UTF-8');
-	} else {
-		echo '<a href="' . _SITE . 'admin_addons/">' . htmlspecialchars(l('view'), ENT_QUOTES, 'UTF-8') . '</a>';
-	}
-	echo '</p>';
-	echo '</div>';
-	
-	# UNAPPROVED COMMENTS (Veilig herschreven met Prepared Queries via PDO)
-	$database = db();
-	if ($database) {
-		$query = "SELECT id, articleid, name FROM " . _PRE . "comments WHERE approved != 'True'";
-		$unapproved = stats('comments', '', "approved != 'True'");
-		if ($unapproved > 0) {
-			echo '<div class="adminpanel"><p class="admintitle">' . htmlspecialchars(l('comments'), ENT_QUOTES, 'UTF-8') . '</p>';
-			echo '<p><a onclick="toggle(\'sub1\')" style="cursor: pointer;" title="' . htmlspecialchars(l('unapproved'), ENT_QUOTES, 'UTF-8') . '">';
-			echo $unapproved . ' ' . htmlspecialchars(l('wait_approval'), ENT_QUOTES, 'UTF-8') . '</a></p>';
-			echo '<div id="sub1" class="innerpanel" style="display: none;">';
-			
-			try {
-				$result = $database->query($query);
-				if ($result) {
-					while ($r = dbfetch($result)) {
-						$articleTITLE_res = retrieve('title', 'articles', 'id', $r['articleid']);
-						$articleTITLE = is_array($articleTITLE_res) ? ($articleTITLE_res['title'] ?? '') : (string)$articleTITLE_res;
-						
-						echo '<p class="spacelink">' . htmlspecialchars((string)$r['name'], ENT_QUOTES, 'UTF-8') . ' (<strong>' . htmlspecialchars($articleTITLE, ENT_QUOTES, 'UTF-8') . '</strong>) ' . l('divider') . '
-						<a href="' . _SITE . '?action=editcomment&amp;commentid=' . (int)$r['id'] . '">' . l('edit') . '</a></p>';
-					}
-				}
-			} catch (PDOException $e) {}
-			echo '</div></div>';
-		}
-	}
-	
-	# SITE PANEL
-	echo '<div class="message"><p class="admintitle">' . htmlspecialchars(l('site_settings'), ENT_QUOTES, 'UTF-8') . '</p>';
-	echo '<p><a href="' . _SITE . 'snews_settings/">' . htmlspecialchars(l('settings'), ENT_QUOTES, 'UTF-8') . '</a>&nbsp;|&nbsp;
-		<a href="' . _SITE . 'snews_files/">' . htmlspecialchars(l('files'), ENT_QUOTES, 'UTF-8') . '</a></p></div>';
-	echo '<div class="message"><p class="admintitle">' . htmlspecialchars(l('login_status'), ENT_QUOTES, 'UTF-8') . '</p>';
-	echo '<p><a href="' . _SITE . 'logout/">' . htmlspecialchars(l('logout'), ENT_QUOTES, 'UTF-8') . '</a></p>';
-	echo '</div>';
+    if (!$prepared) {
+        return $result->fetch(PDO::FETCH_ASSOC);
+    }
+
+    try {
+        $result->execute($args);
+    } catch (PDOException $msg) {
+        error_log('sNews query execution error: ' . $msg->getMessage());
+        if (!headers_sent()) {
+            http_response_code(500);
+        }
+        die('Query execution error.');
+    }
+    return $result;
 }
 
-// SHOW ADDONS IN ADMIN (PHP 8.1 safe array key checks)
-function showAdmAddons(): void {
-	global $l;
-	echo '<div class="adminpanel">';
-	echo '<p class="admintitle">' . htmlspecialchars(l('admin_addons'), ENT_QUOTES, 'UTF-8') . '</p>';
-	$funcs = readAddons();
-	if (!empty($funcs)) {
-		$list = explode(',', $funcs);
-		foreach ($list as $addon_func) {
-			$addon_func = trim($addon_func);
-			$field = str_replace('admin_', '', $addon_func) . '_title';
-			// FIX: Null coalescing check voorkomt undefined key warnings
-			if (isset($l[$field]) || !empty(l($field))) {
-				echo '<p>' . htmlspecialchars(l($field), ENT_QUOTES, 'UTF-8') . ': <a href="' . _SITE . htmlspecialchars($addon_func, ENT_QUOTES, 'UTF-8') . '/">' . htmlspecialchars(l('administration'), ENT_QUOTES, 'UTF-8') . '</a></p>';
-			}
-		}
-	}
-	echo '</div>';
+// SESSION TOKEN
+// Value stored in the session when the administrator logs in. It is an HMAC over the full session id,
+// the browser and the site, keyed with the secret from config.php.
+function token(): string
+{
+    $secret = (string)ini_value('SECURITY', 'string_hash') . (defined('SECURE_ID') ? SECURE_ID : '');
+    $b = $_SERVER['HTTP_USER_AGENT'] ?? 'unknown_agent';
+    $site = defined('_SITE') ? _SITE : '';
+    return hash_hmac('sha256', session_id() . '|' . $b . '|' . $site, $secret);
 }
 
-// HTML ENTITIES
-function entity(mixed $item): string {
-	$charset = !empty(s('charset')) ? s('charset') : 'UTF-8';
-	return htmlspecialchars((string)$item, ENT_QUOTES, $charset);
+function csrf_token(): string
+{
+    if (empty($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+
+    return $_SESSION['csrf_token'];
 }
 
-// MAKE A CLEAN SEF URL
-function cleanSEF(mixed $string): string {
-	$string = str_replace(' ', '-', (string)$string);
-	$string = (string)preg_replace('/[^0-9a-zA-Z-_]/', '', $string);
-	$string = str_replace('-', ' ', $string);
-	$string = (string)preg_replace('/^\s+|\s+$/', '', $string);
-	$string = (string)preg_replace('/\s+/', ' ', $string);
-	$string = str_replace(' ', '-', $string);
-	return strtolower($string);
+function csrf_field(): string
+{
+    return '<input type="hidden" name="csrf_token" value="' .
+        htmlspecialchars(csrf_token(), ENT_QUOTES, 'UTF-8') . '">';
 }
 
-// CLEAN CHECK SEF
-function cleancheckSEF(mixed $string): string {
-	return !preg_match('/^[a-z0-9-_]+$/i', (string)$string) ? 'notok' : 'ok';
+function csrf_check(): bool
+{
+    return isset($_POST['csrf_token'])
+        && is_string($_POST['csrf_token'])
+        && hash_equals(csrf_token(), $_POST['csrf_token']);
 }
 
-// PREPARE TEXT TO DATABASE (CRUCIALE FIX: get_magic_quotes_gpc volledig verwijderd wegens fatal error)
-function clean_mysql(mixed $text): string {
-	$text_str = (string)$text;
-	// The article text is posted as plain HTML by the editor and saved with prepared statements, so it must NOT
-	// be urldecoded: that would turn every "+" into a space and decode %20 in links.
-	// Only text that has no "<" at all but does contain an encoded "<" (%3C) is treated as url-encoded.
-	if (!str_contains($text_str, '<') && stripos($text_str, '%3C') !== false) {
-		$text_str = urldecode($text_str);
-	}
-	return $text_str;
+// For links that change something (delete, hide, show): "?action=...&amp;" . csrf_query()
+function csrf_query(): string
+{
+    return 'csrf_token=' . rawurlencode(csrf_token());
 }
 
-// SETTINGS FORM (PHP 8.1 safe form initialization)
-function settings(): void {
-	echo '<div class="adminpanel"><p class="admintitle">' . htmlspecialchars(l('settings_title'), ENT_QUOTES, 'UTF-8') . '</p>';
-	echo html_input('form', '', 'post', '', '', '', '', '', '', '', '', '', 'post', '?action=process&amp;task=save_settings', '');
-	echo csrf_field();
-		# Expandable Settings
-		echo '<p><a onclick="toggle(\'sub1\')" style="cursor: pointer;" title="' . htmlspecialchars(l('a_openclose') . l('settings'), ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars(l('settings'), ENT_QUOTES, 'UTF-8') . '</a></p>';
-		echo '<div id="sub1" style="display: none;">';
-		echo html_input('text', 'website_title', 'webtitle', s('website_title'), l('a_website_title'), '', '', '', '', '', '', '', '', '', '');
-		echo html_input('text', 'home_sef', 'webSEF', s('home_sef') === '' ? l('home_sef') : s('home_sef'), l('a_home_sef'), '', 'onkeypress="return SEFrestrict(event);"', '', '', '', '', '', '', '', '');
-		echo html_input('text', 'website_description', 'wdesc', s('website_description'), l('a_description'), '', '', '', '', '', '', '', '', '', '');
-		echo html_input('text', 'website_keywords', 'wkey', s('website_keywords'), l('a_keywords'), '', '', '', '', '', '', '', '', '', '');
-		echo '</div>';
-		
-		# Expandable Contact
-		echo '<p><a onclick="toggle(\'sub2\')" style="cursor: pointer;" title="' . htmlspecialchars(l('a_openclose') . l('a_contact_info'), ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars(l('a_contact_info'), ENT_QUOTES, 'UTF-8') . '</a></p>';
-		echo '<div id="sub2" style="display: none;">';
-		echo html_input('text', 'website_email', 'we', s('website_email'), l('a_website_email'), '', '', '', '', '', '', '', '', '', '');
-		echo html_input('text', 'contact_subject', 'cs', s('contact_subject'), l('a_contact_subject'), '', '', '', '', '', '', '', '', '', '');
-		echo '</div>';
-		
-		# Expandable Time & Locale
-		echo '<p><a onclick="toggle(\'sub3\')" style="cursor: pointer;" title="' . htmlspecialchars(l('a_openclose') . l('a_time_settings'), ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars(l('a_time_settings'), ENT_QUOTES, 'UTF-8') . '</a></p>';
-		echo '<div id="sub3" style="display: none;">';
-		echo html_input('text', 'language', 'lang', s('language') === '' ? 'EN' : s('language'), l('a_language'), '', '', '', '', '', '', '', '', '', '');
-		echo html_input('text', 'charset', 'char', s('charset') === '' ? 'UTF-8' : s('charset'), l('charset'), '', '', '', '', '', '', '', '', '', '');
-		echo html_input('text', 'date_format', 'dt', s('date_format'), l('a_date_format'), '', '', '', '', '', '', '', '', '', '');
-		echo '</div>';
-
-				# Expandable Contents
-		echo '<p><a onclick="toggle(\'sub4\')" style="cursor: pointer;" title="' . htmlspecialchars(l('a_openclose') . l('contents'), ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars(l('contents'), ENT_QUOTES, 'UTF-8') . '</a></p>';
-		echo '<div id="sub4" style="display: none;">';
-		echo html_input('text', 'article_limit', 'artl', s('article_limit'), l('a_article_limit'), '', '', '', '', '', '', '', '', '', '');
-		echo html_input('text', 'rss_limit', 'rssl', s('rss_limit'), l('a_rss_limit'), '', '', '', '', '', '', '', '', '', '');
-		echo '<p><label for="dp">' . htmlspecialchars(l('a_display_page'), ENT_QUOTES, 'UTF-8') . ':</label><br /> <select name="display_page" id="dp">';
-		
-		$display_page_val = (int)s('display_page');
-		echo '<option value="0"' . ($display_page_val === 0 ? ' selected="selected"' : '') . '>' . htmlspecialchars(l('none'), ENT_QUOTES, 'UTF-8') . '</option>';
-		
-		$database = db();
-		if ($database) {
-			$query = "SELECT id, title FROM " . _PRE . "articles WHERE position = 3 ORDER BY id ASC";
-			try {
-				$result = $database->query($query);
-				if ($result) {
-					foreach ($result as $r) {
-						$sel = ($display_page_val === (int)$r['id']) ? ' selected="selected"' : '';
-						echo '<option value="' . (int)$r['id'] . '"' . $sel . '>' . htmlspecialchars((string)$r['title'], ENT_QUOTES, 'UTF-8') . '</option>';
-					}
-				}
-			} catch (PDOException $e) {}
-		}
-		echo '</select></p>';
-		
-		echo html_input('checkbox', 'display_new_on_home', 'dnoh', '', l('a_display_new_on_home'), '', '', '', '', (s('display_new_on_home') === 'on' ? 'ok' : ''), '', '', '', '', '');
-		echo html_input('checkbox', 'display_pagination', 'dpag', '', l('a_display_pagination'), '', '', '', '', (s('display_pagination') === 'on' ? 'ok' : ''), '', '', '', '', '');
-		echo html_input('checkbox', 'num_categories', 'nc', '', l('a_num_categories'), '', '', '', '', (s('num_categories') === 'on' ? 'ok' : ''), '', '', '', '', '');
-		echo html_input('checkbox', 'show_cat_names', 'scn', '', l('a_show_category_name'), '', '', '', '', (s('show_cat_names') === 'on' ? 'ok' : ''), '', '', '', '', '');
-		echo html_input('checkbox', 'enable_extras', 'ee', '', l('enable_extras'), '', '', '', '', (s('enable_extras') === 'YES' ? 'ok' : ''), '', '', '', '', '');
-		echo html_input('text', 'file_ext', 'fileext', s('file_extensions'), l('file_extensions'), '', '', '', '', '', '', '', '', '', '');
-		echo html_input('text', 'allowed_file', 'all_file', s('allowed_files'), l('allowed_files'), '', '', '', '', '', '', '', '', '', '');
-		echo html_input('text', 'allowed_img', 'all_img', s('allowed_images'), l('allowed_images'), '', '', '', '', '', '', '', '', '', '');
-		echo '</div>';
-		
-		# Expandable Comments
-		echo '<p><a onclick="toggle(\'sub5\')" style="cursor: pointer;" title="' . htmlspecialchars(l('a_openclose') . l('comments'), ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars(l('comments'), ENT_QUOTES, 'UTF-8') . '</a></p>';
-		echo '<div id="sub5" style="display: none;">';
-		echo html_input('checkbox', 'approve_comments', 'ac', '', l('a_approve_comments'), '', '', '', '', (s('approve_comments') === 'on' ? 'ok' : ''), '', '', '', '', '');
-		echo html_input('text', 'comment_repost_timer', 'crt', s('comment_repost_timer'), l('comment_repost_timer'), '', '', '', '', '', '', '', '', '', '');
-		echo html_input('checkbox', 'mail_on_comments', 'mc', '', l('a_mail_on_comments'), '', '', '', '', (s('mail_on_comments') === 'on' ? 'ok' : ''), '', '', '', '', '');
-		echo html_input('checkbox', 'enable_comments', 'ec', '', l('enable_comments'), '', '', '', '', (s('enable_comments') === 'YES' ? 'ok' : ''), '', '', '', '', '');
-		echo html_input('checkbox', 'freeze_comments', 'dc', '', l('freeze_comments'), '', '', '', '', (s('freeze_comments') === 'YES' ? 'ok' : ''), '', '', '', '', '');
-		
-		# ORDER
-		echo '<p><label for="co">' . htmlspecialchars(l('a_comments_order'), ENT_QUOTES, 'UTF-8') . ':</label><br /><select id="co" name="comments_order">';
-		echo '<option value="DESC"' . (s('comments_order') === 'DESC' ? ' selected="selected"' : '') . '>' . htmlspecialchars(l('newer_top'), ENT_QUOTES, 'UTF-8') . '</option>';
-		echo '<option value="ASC"' . (s('comments_order') === 'ASC' ? ' selected="selected"' : '') . '>' . htmlspecialchars(l('newer_bottom'), ENT_QUOTES, 'UTF-8') . '</option></select>';
-		echo '</p>';
-		
-		echo html_input('text', 'comment_limit', 'cl', s('comment_limit'), l('a_comment_limit'), '', '', '', '', '', '', '', '', '', '');
-		echo html_input('checkbox', 'word_filter_enable', 'wfe', '', l('a_word_filter_enable'), '', '', '', '', (s('word_filter_enable') === 'on' ? 'ok' : ''), '', '', '', '', '');
-		echo html_input('text', 'word_filter_file', 'wff', s('word_filter_file'), l('a_word_filter_file'), '', '', '', '', '', '', '', '', '', '');
-		echo html_input('text', 'word_filter_change', 'wfc', s('word_filter_change'), l('a_word_filter_change'), '', '', '', '', '', '', '', '', '', '');
-		echo '</div>';
-		
-		echo '<p>';
-		# Save Settings button
-		echo html_input('hidden', 'action', '', 'process', '', '', '', '', '', '', '', '', '', '', '');
-		echo html_input('hidden', 'task', 'task', 'save_settings', '', '', '', '', '', '', '', '', '', '', '');
-		echo html_input('submit', 'save', 'save', l('save'), '', 'button', '', '', '', '', '', '', '', '', '');
-		echo '</p>';
-	echo '</form>';
-	echo '</div>';
-	
-	# Change Password panel (Gecorrigeerd: Structuur en nesting hersteld)
-	echo '<div class="adminpanel">';
-		echo html_input('form', '', 'post', '', '', '', '', '', '', '', '', '', 'post', '?action=process&amp;task=changeup', '');
-		echo csrf_field();
-		echo '<p><a onclick="toggle(\'sub6\')" style="cursor: pointer;" title="' . htmlspecialchars(l('a_openclose') . l('change_up'), ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars(l('change_up'), ENT_QUOTES, 'UTF-8') . '</a></p>';
-		echo '<div id="sub6" style="display: none;">';
-		echo '<p>' . htmlspecialchars(l('login_limit'), ENT_QUOTES, 'UTF-8') . '</p>';
-		$nl_ui = strtolower((string)s('language')) === 'nl';
-		$cur_label = l('current_password') !== '' ? l('current_password') : ($nl_ui ? 'Huidig wachtwoord' : 'Current password');
-		$min_note = $nl_ui ? 'Een nieuw wachtwoord moet minimaal 10 tekens lang zijn.' : 'A new password must be at least 10 characters long.';
-		echo '<p>' . htmlspecialchars($min_note, ENT_QUOTES, 'UTF-8') . '</p>';
-		echo html_input('text', 'uname', 'uname', '', l('a_username'), '', '', '', '', '', '', '', '', '', '');
-		echo html_input('password', 'pass_current', 'pass_current', '', $cur_label, '', 'autocomplete="current-password"', '', '', '', '', '', '', '', '');
-		echo html_input('password', 'pass1', 'pass1', '', l('a_password'), '', 'autocomplete="new-password"', '', '', '', '', '', '', '', '');
-		echo html_input('password', 'pass2', 'pass2', '', l('a_password2'), '', 'autocomplete="new-password"', '', '', '', '', '', '', '', '');
-		echo '<p>';
-		# Save Password Change button
-		echo html_input('hidden', 'action', '', 'process', '', '', '', '', '', '', '', '', '', '', '');
-		echo html_input('hidden', 'task', '', 'changeup', '', '', '', '', '', '', '', '', '', '', '');
-		echo html_input('submit', 'submit_pass', 'submit_pass', l('save'), '', 'button', '', '', '', '', '', '', '', '', '');
-		echo '</p></div>';
-		echo '</form>';
-	echo '</div>';
+function csrf_check_get(): bool
+{
+    return isset($_GET['csrf_token'])
+        && is_string($_GET['csrf_token'])
+        && hash_equals(csrf_token(), $_GET['csrf_token']);
 }
 
-// CATEGORIES - ADMIN LIST (Gecorrigeerd: array index string literal fix en prepared subqueries)
-function admin_categories(): void {
-	$database = db();
-	if (!$database) {
-		return;
-	}
+// SMART RETRIEVE FUNCTION
+function populate_retr_cache(string $selector, string $value): string
+{
+    static $retr_cache_cat = ['id' => [], 'seftitle' => []];
+    static $is_populated = false;
 
-	$add = ' - <a href="' . _SITE . 'admin_category/">' . htmlspecialchars(l('add_new'), ENT_QUOTES, 'UTF-8') . '</a>';
-	$link = '?action=admin_category';
-	$tab = 1;
-	
-	echo '<div class="adminpanel">';
-	echo '<p class="admintitle">' . l('categories') . $add . '</p>';
-	echo html_input('form', '', '', '', '', '', '', '', '', '', '', '', 'post', '?action=process&amp;task=reorder', '');
-	echo csrf_field();
-	echo '<p><input type="hidden" name="order" id="order" value="snews_categories" /></p>';
-	
-	$num_cat = stats('categories', '', 'subcat = 0');
-	if ($num_cat === 0) {
-		echo '<p>' . htmlspecialchars(l('category_not_exist'), ENT_QUOTES, 'UTF-8') . '</p>';
-	} else {
-		$query = "SELECT id, name, description, published, catorder FROM " . _PRE . "categories WHERE subcat = 0 ORDER BY catorder, id ASC";
-		try {
-			$result = $database->query($query);
-			if ($result) {
-				// Bereid de subcategoriequery voor buiten de loop voor betere PHP 8.1 runtime prestaties
-				$subquery = "SELECT id, name, description, published, catorder FROM " . _PRE . "categories WHERE subcat = :parent_id ORDER BY catorder, id ASC";
-				$stmt_sub = $database->prepare($subquery);
-				
-				foreach ($result as $r) {
-					$cat_id = (int)$r['id'];
-					$cat_input = '<input type="text" name="cat_' . $cat_id . '" value="' . (int)$r['catorder'] . '" size="1" tabindex="' . $tab . '" /> &nbsp;';
-					
-					echo '<p>' . $cat_input . '<strong>' . htmlspecialchars((string)$r['name'], ENT_QUOTES, 'UTF-8') . '</strong>
-						' . l('divider') . ' <a href="' . _SITE . $link . '&amp;id=' . $cat_id . '" title="' . htmlspecialchars((string)$r['description'], ENT_QUOTES, 'UTF-8') . '">' . l('edit') . '</a> ';
-					echo $r['published'] !== 'YES' ? ' ' . l('divider') . ' [' . l('status') . ' ' . l('unpublished') . ']' : '';
-					echo ' ' . l('divider') . ' <a href="' . _SITE . $link . '&amp;sub_id=' . $cat_id . '" title="' . htmlspecialchars((string)$r['description'], ENT_QUOTES, 'UTF-8') . '">' . l('add_subcategory') . '</a></p>';
-					
-					// FIX: Herschreven naar een veilige prepared execution om de $r[id] array string warning te elimineren
-					$stmt_sub->execute(['parent_id' => $cat_id]);
-					$tab2 = 1;
-					
-					while ($sub = $stmt_sub->fetch(PDO::FETCH_ASSOC)) {
-						$sub_id = (int)$sub['id'];
-						$subcat_input = '<input type="text" name="cat_' . $sub_id . '" value="' . (int)$sub['catorder'] . '" size="1" tabindex="' . $tab2 . '" /> &nbsp;';
-						
-						echo '<p class="subcat">' . $subcat_input . '<strong>' . htmlspecialchars((string)$sub['name'], ENT_QUOTES, 'UTF-8') . '</strong>' . l('divider') . ' ';
-						echo '<a href="' . _SITE . $link . '&amp;id=' . $sub_id . '" title="' . htmlspecialchars((string)$sub['description'], ENT_QUOTES, 'UTF-8') . '">' . l('edit') . '</a> ';
-						echo ($sub['published'] !== 'YES' ? ' ' . l('divider') . ' [' . l('status') . ' ' . l('unpublished') . ']' : '');
-						echo '</p>';
-						$tab2++;
-					}
-					$tab++;
-				}
-			}
-		} catch (PDOException $e) {}
-	}
-	
-	echo html_input('hidden', 'action', 'process', 'process', '', '', '', '', '', '', '', '', '', '', '');
-	echo html_input('hidden', 'task', 'task', 'reorder', '', '', '', '', '', '', '', '', '', '', '');
-	echo '<p>';
-	echo html_input('submit', 'reorder', 'reorder', l('order_content'), '', 'button', '', '', '', '', '', '', '', '', '');
-	echo '</p></form>';
-	echo '</div>';
-	}
+    if (!$is_populated) {
+        $database = db();
+        if ($database) {
+            $prefix = defined('_PRE') ? _PRE : '';
+            $query = "SELECT id, seftitle, name FROM " . $prefix . "categories";
 
-// CATEGORIES FORM (PHP 8.1 safe: prepared queries & undefined array key fixes)
-function form_categories(string $subcat = 'cat'): void {
-	echo csrf_field();
-	$database = db();
-	if (!$database) {
-		return;
-	}
-
-	$categoryid = 0;
-	$sub_cat = 0;
-	$name = '';
-	
-	if (isset($_GET['id']) && is_numeric($_GET['id'])) {
-		$categoryid = (int)$_GET['id'];
-		
-		// FIX: Naar prepared statements om SQL fouten en type errors te voorkomen
-		$query = "SELECT id, name, seftitle, published, description, subcat, catorder FROM " . _PRE . "categories WHERE id = :id";
-		try {
-			$stmt = $database->prepare($query);
-			$stmt->execute(['id' => $categoryid]);
-			$r = $stmt->fetch(PDO::FETCH_ASSOC);
-			
-			if ($r) {
-				$parent_id = (int)$r['subcat'];
-				$qwr = "SELECT name FROM " . _PRE . "categories WHERE id = :parent_id";
-				$stmt_parent = $database->prepare($qwr);
-				$stmt_parent->execute(['parent_id' => $parent_id]);
-				if ($rr = $stmt_parent->fetch(PDO::FETCH_ASSOC)) {
-					$name = (string)$rr['name'];
-				}
-				
-				$frm_action = _SITE . '?action=process&amp;task=admin_category&amp;id=' . $categoryid;
-				$frm_add_edit = ($parent_id === 0) ? l('edit') . ' ' . l('category') : l('edit') . ' ' . l('subcategory') . ' ' . $name;
-				$frm_name = (string)$r['name'];
-				$subcat = ($parent_id === 0) ? 'cat' : 'subcat';
-				$frm_sef_title = (string)$r['seftitle'];
-				$frm_description = (string)$r['description'];
-				$frm_publish = ($r['published'] === 'YES') ? 'ok' : '';
-				$catorder = isset($r['catorder']) ? (int)$r['catorder'] : 0;
-				$frm_task = 'edit_category';
-				$frm_submit = l('edit_button');
-			} else {
-				// Categorie id bestaat niet in database
-				return;
-			}
-		} catch (PDOException $e) {
-			return;
-		}
-	} else {
-		$sub_cat = isset($_GET['sub_id']) ? (int)$_GET['sub_id'] : 0;
-		if ($sub_cat !== 0) {
-			$query = "SELECT name FROM " . _PRE . "categories WHERE id = :sub_cat";
-			try {
-				$stmt = $database->prepare($query);
-				$stmt->execute(['sub_cat' => $sub_cat]);
-				if ($r = $stmt->fetch(PDO::FETCH_ASSOC)) {
-					$name = (string)$r['name'];
-				}
-			} catch (PDOException $e) {}
-		}
-		
-		$frm_action = _SITE . '?action=process&amp;task=admin_category';
-		$frm_add_edit = ($sub_cat === 0) ? l('add_category') : l('add_subcategory') . ' (' . $name . ')';
-		
-		$title = isset($_POST['title']) ? cleanSEF($_POST['seftitle'] ?? '') : '';
-		$frm_sef_title = (isset($_POST['name']) && (string)$_POST['name'] === '') ? cleanSEF($_POST['name']) : $title;
-		$frm_name = '';
-		$catorder = 0;
-		$frm_description = '';
-		$frm_publish = 'ok';
-		$frm_task = 'add_category';
-		$frm_submit = l('add_category');
-	}
-	
-	echo html_input('form', '', 'post', '', '', '', '', '', '', '', '', '', 'post', $frm_action, '');
-	echo csrf_field();
-	echo '<div class="adminpanel">';
-	echo '<p class="admintitle">' . htmlspecialchars($frm_add_edit, ENT_QUOTES, 'UTF-8') . '</p>';
-	echo html_input('text', 'name', 't', $frm_name, l('name'), '', 'onchange="genSEF(this,document.forms[\'post\'].seftitle)"', 'onkeyup="genSEF(this,document.forms[\'post\'].seftitle)"', '', '', '', '', '', '', '');
-	echo html_input('text', 'seftitle', 's', $frm_sef_title, l('sef_title_cat'), '', '', '', '', '', '', '', '', '', '');
-	echo html_input('text', 'description', 'desc', $frm_description, l('description'), '', '', '', '', '', '', '', '', '', '');
-	
-	if ($sub_cat === 0 && !empty($categoryid)) {
-		echo '<p>' . htmlspecialchars(l('subcategory'), ENT_QUOTES, 'UTF-8') . ':<br />';
-		if (function_exists('category_list')) {
-			category_list($categoryid);
-		}
-		echo '</p>';
-	}
-	
-	$publish_label = ($subcat === 'cat') ? l('publish_category') : l('publish_subcategory');
-	echo html_input('checkbox', 'publish', 'pub', 'YES', $publish_label, '', '', '', '', $frm_publish, '', '', '', '', '');
-	echo '</div><p>';
-	
-	if ($sub_cat !== 0) {
-		echo html_input('hidden', 'subcat', 'subcat', (string)$sub_cat, '', '', '', '', '', '', '', '', '', '', '');
-	}
-	echo html_input('hidden', 'catorder', 'catorder', (string)$catorder, '', '', '', '', '', '', '', '', '', '', '');
-	echo html_input('hidden', 'action', 'process', 'process', '', '', '', '', '', '', '', '', '', '', '');
-	echo html_input('hidden', 'task', 'task', 'admin_category', '', '', '', '', '', '', '', '', '', '', '');
-	echo html_input('submit', $frm_task, $frm_task, $frm_submit, '', 'button', '', '', '', '', '', '', '', '', '');
-	
-	if (!empty($categoryid)) {
-		echo '&nbsp;&nbsp;';
-		echo html_input('hidden', 'id', 'id', (string)$categoryid, '', '', '', '', '', '', '', '', '', '', '');
-		echo html_input('submit', 'delete_category', 'delete_category', l('delete'), '', 'button', 'onclick="return pop(\'' . htmlspecialchars(l('js_delete2'), ENT_QUOTES, 'UTF-8') . '\')"', '', '', '', '', '', '', '', '');
-	}
-	echo '</p></form>';
+            try {
+                $result = $database->query($query);
+                if ($result) {
+                    foreach ($result as $r) {
+                        $retr_cache_cat['id'][$r['id']] = $r['seftitle'];
+                        $retr_cache_cat['seftitle'][$r['seftitle']] = $r['name'];
+                    }
+                    $is_populated = true;
+                }
+            } catch (PDOException $e) {
+                // silent
+            }
+        }
+    }
+    return $retr_cache_cat[$selector][$value] ?? '';
 }
 
-// DELETE CATEGORY BY ID (CRUCIALE FIX: dbfetch na DELETE query wegehaald wegens fatal crash)
-function delete_cat(mixed $id): void {
-	$database = db();
-	if (!$database) {
-		return;
-	}
+// RETRIEVE FUNCTION
+function retrieve(string $column, string $table, string $field, mixed $value): mixed
+{
+    if (is_null($value)) {
+        return null;
+    }
 
-	$id = (int)$id;
-	$catdata_res = retrieve('catorder, subcat', 'categories', 'id', $id);
-	
-	if (is_array($catdata_res)) {
-		$cat_order = (int)($catdata_res['catorder'] ?? 0);
-		$cat_subcat = (int)($catdata_res['subcat'] ?? 0);
-		
-		try {
-			// FIX: Herschreven naar execute() zonder loze dbfetch() call
-			$query = "DELETE FROM " . _PRE . "categories WHERE id = :id";
-			$stmt = $database->prepare($query);
-			$stmt->execute(['id' => $id]);
-			
-			// Herbereken de volgorde van overige categorieën
-			$sql = "SELECT id, catorder FROM " . _PRE . "categories WHERE catorder > :cat_order AND subcat = :cat_subcat";
-			$stmt_select = $database->prepare($sql);
-			$stmt_select->execute(['cat_order' => $cat_order, 'cat_subcat' => $cat_subcat]);
-			
-			$sq_update = "UPDATE " . _PRE . "categories SET catorder = :order WHERE id = :target_id";
-			$stmt_update = $database->prepare($sq_update);
-			
-			while ($rr = $stmt_select->fetch(PDO::FETCH_ASSOC)) {
-				$new_order = (int)$rr['catorder'] - 1;
-				$stmt_update->execute([
-					'order'     => $new_order,
-					'target_id' => (int)$rr['id']
-				]);
-			}
-		} catch (PDOException $e) {}
-	}
+    // Column, table and field names are put into the SQL text, so only plain identifiers are allowed.
+    if (!preg_match('/^\s*[A-Za-z0-9_]+(?:\s*,\s*[A-Za-z0-9_]+)*\s*$/', $column)
+        || !preg_match('/^[A-Za-z0-9_]+$/', $table)
+        || !preg_match('/^[A-Za-z0-9_]+$/', $field)) {
+        return null;
+    }
+
+    $list = explode(',', $column);
+    if ($table === 'categories') {
+        // The cache maps seftitle -> name and id -> seftitle, so only use it for those exact lookups.
+        if ($column === 'name' && $field === 'seftitle') {
+            return populate_retr_cache('seftitle', (string)$value);
+        }
+        if ($column === 'seftitle' && $field === 'id') {
+            return populate_retr_cache('id', (string)$value);
+        }
+    }
+
+    $database = db();
+    if (!$database) {
+        return null;
+    }
+
+    $retrieve = null;
+    $prefix = defined('_PRE') ? _PRE : '';
+
+    $query = "SELECT $column FROM " . $prefix . "$table WHERE $field = :value";
+
+    try {
+        $stmt = $database->prepare($query);
+        $stmt->execute(['value' => $value]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (isset($rows[0])) {
+            $retrieve = count($list) > 1 ? $rows[0] : $rows[0][$column];
+        }
+    } catch (PDOException $e) {
+        return null;
+    }
+
+    return $retrieve;
 }
 
-// DELETE EXTRA/PAGE (PHP 8.1 safe prepared verification)
-function delete_item(string $table, string $field, mixed $id): void {
-	$database = db();
-	if (!$database) {
-		return;
-	}
-	
-	// Valideer tabelnaam en veldnaam tegen SQL injection (whitelist)
-	$table = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
-	$field = preg_replace('/[^a-zA-Z0-9_]/', '', $field);
-	
-	$query = "DELETE FROM " . _PRE . $table . " WHERE " . $field . " = :val";
-	try {
-		$stmt = $database->prepare($query);
-		$stmt->execute(['val' => $id]);
-	} catch (PDOException $e) {}
+// SITE
+function site(): string
+{
+    // Preferred: a fixed address from config.php ([SECURITY] site_url). The visitor cannot influence it.
+    $fixed = trim((string)ini_value('SECURITY', 'site_url'));
+    if ($fixed !== '') {
+        $u = parse_url($fixed);
+        if (is_array($u) && isset($u['scheme'], $u['host'])
+            && in_array(strtolower($u['scheme']), ['http', 'https'], true)
+            && preg_match('/^(?:[a-z0-9.-]+|\[[0-9a-f:.]+\])$/i', $u['host']) === 1
+            && !isset($u['user'], $u['pass'], $u['query'], $u['fragment'])
+            && preg_match('#^[A-Za-z0-9._~/-]*$#', (string)($u['path'] ?? '')) === 1) {
+            $port = isset($u['port']) ? ':' . (int)$u['port'] : '';
+            $path = trim((string)($u['path'] ?? ''), '/');
+            return strtolower($u['scheme']) . '://' . $u['host'] . $port . '/' . ($path !== '' ? $path . '/' : '');
+        }
+    }
+
+    $https = (isset($_SERVER['HTTPS']) && ($_SERVER['HTTPS'] === 'on' || $_SERVER['HTTPS'] === 1 || $_SERVER['HTTPS'] === '1'))
+        || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string)$_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https');
+    $protocol = $https ? 'https://' : 'http://';
+
+    // The Host header is chosen by the client. Only accept a syntactically valid host name (or IP),
+    // otherwise it could be used to inject markup into <base href> and every generated link.
+    $valid_host = static function (string $h): bool {
+        return preg_match('/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::\d{1,5})?$/i', $h) === 1
+            || preg_match('/^\[[0-9a-f:.]+\](?::\d{1,5})?$/i', $h) === 1;
+    };
+
+    $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+    $ok = $valid_host($host);
+
+    // Optional: [SECURITY] allowed_hosts = "example.com,www.example.com" in config.php
+    $allowed = trim((string)ini_value('SECURITY', 'allowed_hosts'));
+    if ($ok && $allowed !== '') {
+        $bare = strtolower(preg_replace('/:\d{1,5}$/', '', $host) ?? $host);
+        $list = array_map(static fn($x) => strtolower(trim($x)), explode(',', $allowed));
+        $ok = in_array($bare, $list, true);
+    }
+
+    if (!$ok) {
+        $host = (string)($_SERVER['SERVER_NAME'] ?? '');
+        if (!$valid_host($host)) {
+            $host = 'localhost';
+        }
+    }
+
+    $host = $protocol . $host;
+
+    $script_name = str_replace('\\', '/', $_SERVER['SCRIPT_NAME'] ?? '');
+    $directory = rtrim(dirname($script_name), '/');
+
+    return $directory === '' ? $host . '/' : $host . $directory . '/';
+}
+$_TYPE = 0;
+
+// INFO LINE TAGS
+function tags(string $tag): string
+{
+    static $tags;
+    if (!$tags) {
+        $on_label = function_exists('l') ? l('on') : 'on';
+        $comments_template = (string)ini_value('INFO_TAGS', 'comments');
+        if (trim($comments_template) === '') {
+            // Fallback when config.php has no [INFO_TAGS] "comments" line: without a template no comment would be shown at all.
+            $comments_template = '<div class="comment">,<strong>,name,</strong>,$on,date,<br />,comment,<br />,edit,</div>';
+        }
+        // Each template piece is trimmed later on, so ordinary spaces around the word would be lost
+        // ("Bartop05.11"); non-breaking spaces survive and give "Bart on 05.11".
+        $on_html = '&nbsp;' . htmlspecialchars(trim($on_label), ENT_QUOTES, 'UTF-8') . '&nbsp;';
+        $tags = array(
+            'infoline' => (string)ini_value('INFO_TAGS', 'infoline'),
+            'comments' => str_replace('$on', $on_html, $comments_template)
+        );
+    }
+    return $tags[$tag] ?? '';
 }
 
-// FORM EXTRA GROUPINGS (PHP 8.1 safe: $_POST undefined keys afgevangen via null coalescing)
-function form_groupings(): void {
-	if (s('enable_extras') !== 'YES') {
-		return;
-	}
-	
-	$database = db();
-	if (!$database) {
-		return;
-	}
+// CONSTANTS
+define('_SITE', site());
+define('DBTYPE', strtolower((string)ini_value('DATABASE', 'engine')));
+// Accept both the modern "SECURE_ID" key (config.php) and the legacy "key_ID" name.
+define('SECURE_ID', (string)(ini_value('SECURITY', 'SECURE_ID') ?: ini_value('SECURITY', 'key_ID')));
+define('_PRE', (string)ini_value('DATABASE', 'prefix'));
+// Administrator sessions expire after a period of inactivity ([SECURITY] session_timeout in seconds, default 2 hours).
+if (isset($_SESSION[_SITE . 'Logged_In'])) {
+    $idle_limit = (int)ini_value('SECURITY', 'session_timeout');
+    $idle_limit = $idle_limit > 0 ? $idle_limit : 7200;
+    $last_active = (int)($_SESSION[_SITE . 'last_active'] ?? 0);
+    if ($last_active > 0 && (time() - $last_active) > $idle_limit) {
+        unset($_SESSION[_SITE . 'Logged_In'], $_SESSION[_SITE . 'last_active']);
+    } else {
+        $_SESSION[_SITE . 'last_active'] = time();
+    }
+    unset($idle_limit, $last_active);
+}
+define('_ADMIN', (isset($_SESSION[_SITE . 'Logged_In']) && is_string($_SESSION[_SITE . 'Logged_In']) && hash_equals(token(), $_SESSION[_SITE . 'Logged_In'])));
 
-	$extraid = 0;
-	if (isset($_GET['id']) && is_numeric($_GET['id'])) {
-		$extraid = (int)$_GET['id'];
-		$query = "SELECT id, name, seftitle, description FROM " . _PRE . "extras WHERE id = :id";
-		
-		try {
-			$stmt = $database->prepare($query);
-			$stmt->execute(['id' => $extraid]);
-			$r = $stmt->fetch(PDO::FETCH_ASSOC);
-			
-			if ($r) {
-				$frm_action = _SITE . '?action=process&amp;task=admin_groupings&amp;id=' . $extraid;
-				$frm_add_edit = l('edit');
-				$frm_name = (string)$r['name'];
-				$frm_sef_title = (string)$r['seftitle'];
-				$frm_description = (string)$r['description'];
-				$frm_task = 'edit_groupings';
-				$frm_submit = l('edit_button');
-			} else {
-				return;
-			}
-		} catch (PDOException $e) {
-			return;
-		}
-	} else {
-		$frm_action = _SITE . '?action=process&amp;task=admin_groupings';
-		$frm_add_edit = l('add_groupings');
-		
-		// FIX: Null coalescing operator voorkomt undefined key warnings bij initialisatie
-		$post_name = (string)($_POST['name'] ?? '');
-		$post_sef = (string)($_POST['seftitle'] ?? '');
-		
-		$frm_name = $post_name;
-		$frm_sef_title = ($post_name === '') ? cleanSEF($post_name) : cleanSEF($post_sef);
-		$frm_description = '';
-		$frm_task = 'add_groupings';
-		$frm_submit = l('add_groupings');
-	}
-	
-	echo html_input('form', '', 'post', '', '', '', '', '', '', '', '', '', 'post', $frm_action, '');
-	echo csrf_field();
-	echo '<div class="adminpanel">';
-	echo '<p class="admintitle">' . htmlspecialchars($frm_add_edit, ENT_QUOTES, 'UTF-8') . '</p>';
-	echo html_input('text', 'name', 't', $frm_name, l('name'), '', 'onchange="genSEF(this,document.forms[\'post\'].seftitle)"', 'onkeyup="genSEF(this,document.forms[\'post\'].seftitle)"', '', '', '', '', '', '', '');
-	echo html_input('text', 'seftitle', 's', $frm_sef_title, l('extra_title'), '', '', '', '', '', '', '', '', '', '');
-	echo html_input('text', 'description', 'desc', $frm_description, l('description'), '', '', '', '', '', '', '', '', '', '');
-	echo '</div><p>';
-	
-	echo html_input('hidden', 'action', 'action', 'process', '', '', '', '', '', '', '', '', '', '', '');
-	echo html_input('hidden', 'task', 'task', 'admin_groupings', '', '', '', '', '', '', '', '', '', '', '');
-	echo html_input('submit', $frm_task, $frm_task, $frm_submit, '', 'button', '', '', '', '', '', '', '', '', '');
-	
-	if (!empty($extraid)) {
-		echo '&nbsp;&nbsp;';
-		echo html_input('hidden', 'id', 'id', (string)$extraid, '', '', '', '', '', '', '', '', '', '', '');
-		if ($extraid !== 1) {
-			echo html_input('submit', 'delete_groupings', 'delete_groupings', l('delete'), '', 'button', 'onclick="return pop(\'' . htmlspecialchars(l('js_delete2'), ENT_QUOTES, 'UTF-8') . '\')"', '', '', '', '', '', '', '', '');
-		}
-	}
-	echo '</p></form>';
+// SITE SETTINGS
+function s(string $var): string
+{
+    static $site_settings = null;
+    if ($site_settings === null) {
+        $site_settings = [];
+        $database = db();
+        if ($database) {
+            $query = "SELECT name, value FROM " . _PRE . "settings";
+            try {
+                $result = $database->query($query);
+                if ($result) {
+                    foreach ($result as $r) {
+                        $site_settings[$r['name']] = $r['value'];
+                    }
+                }
+            } catch (PDOException $e) {
+                // silent
+            }
+        }
+    }
+    return $site_settings[$var] ?? '';
 }
 
-// ADMIN GROUPINGS
-function admin_groupings(): void {
-	if (s('enable_extras') !== 'YES') {
-		return;
-	}
-	
-	$database = db();
-	if (!$database) {
-		return;
-	}
+// CLEAN
+function clean(mixed $text): string
+{
+    if (is_array($text) || is_object($text) || $text === null) {
+        return '';
+    }
 
-	$add = (stats('extras', '') > 0) ? ' - <a href="' . _SITE . 'admin_groupings/" title="' . htmlspecialchars(l('add_new'), ENT_QUOTES, 'UTF-8') . '">' . l('add_new') . '</a>' : '';
-	
-	echo '<div class="adminpanel">';
-	echo '<p class="admintitle">' . l('groupings') . $add . '</p>';
-	$num = stats('extras', '');
-if ($num === 0) {
-echo '<p>' . htmlspecialchars(l('group_not_exist'), ENT_QUOTES, 'UTF-8') . '</p>';
+    $text = (string)$text;
+    $text = strip_tags(htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
+    // Remove control characters only. (The old pattern removed ALL non-ASCII characters,
+    // which silently deleted accented letters from titles, names and comments.)
+    $text = preg_replace('/[\x00-\x1F\x7F]/', '', $text) ?? '';
+
+    return $text;
+}
+
+// CHECK MATH CAPTCHA
+function checkMathCaptcha(): bool
+{
+    if (_ADMIN) {
+        return true;
+    }
+    $result = false;
+
+    $testNumber = $_SESSION[_SITE . 'mathCaptcha-digit'] ?? 'none';
+    unset($_SESSION[_SITE . 'mathCaptcha-digit']);
+
+    if (isset($_POST['calc']) && is_numeric($testNumber) && is_numeric($_POST['calc'])) {
+        if ((int)$testNumber === (int)$_POST['calc']) {
+            $result = true;
+        }
+    }
+    return $result;
+}
+
+// MATH CAPTCHA
+function mathCaptcha(): string
+{
+    if (_ADMIN) {
+        return "";
+    }
+    $captcha_label = function_exists('l') ? l('math_captcha') : '';
+    if ($captcha_label === '') {
+        $captcha_label = strtolower(s('language')) === 'nl' ? 'Los de som op' : 'Solve the sum';
+    }
+
+    if (!isset($_SESSION[_SITE . 'mathCaptcha-digit'])) {
+        $x = random_int(1, 9);
+        $y = random_int(1, 9);
+        $_SESSION[_SITE . 'mathCaptcha-digit'] = $x + $y;
+        $_SESSION[_SITE . 'mathCaptcha-digit-x'] = $x;
+        $_SESSION[_SITE . 'mathCaptcha-digit-y'] = $y;
+    }
+
+    $math = '<p><label for="calc">* ' . htmlspecialchars($captcha_label, ENT_QUOTES, 'UTF-8') . ': </label><br />';
+    $math .= (int)$_SESSION[_SITE . 'mathCaptcha-digit-x'] . ' + ' . (int)$_SESSION[_SITE . 'mathCaptcha-digit-y'] . ' = ';
+    $math .= '<input type="text" name="calc" id="calc" inputmode="numeric" autocomplete="off" required /></p>';
+    return $math;
+}
+
+// USER/PASS CHECK
+function checkUserPass(mixed $input): ?string
+{
+    $output = function_exists('cleanXSS') ? cleanXSS($input) : $input;
+    $output = strip_tags((string)$output);
+
+    return (ctype_alnum($output) && strlen($output) > 3 && strlen($output) < 14) ? $output : null;
+}
+
+// PASSWORD CHECK
+// Passwords may contain any printable characters (bcrypt uses at most 72 bytes).
+// $enforce_policy is used when a NEW password is chosen: at least 10 characters.
+function checkPassword(mixed $input, bool $enforce_policy = false): ?string
+{
+    if (!is_string($input) || $input === '') {
+        return null;
+    }
+    if (strlen($input) > 72 || preg_match('/[\x00-\x1F\x7F]/', $input)) {
+        return null;
+    }
+    if ($enforce_policy && mb_strlen($input) < 10) {
+        return null;
+    }
+    return $input;
+}
+
+// ROUTES ARRAY
+$routes = array();
+
+// ADD ROUTE
+function addRoute(string $sef, string $title, mixed $func): void
+{
+    global $routes;
+    $routes[$sef] = array(
+        'title' => $title,
+        'func' => $func
+    );
+}
+
+// SANITIZE GET AS URL
+if (isset($_GET['category']) && !empty($_GET['category'])) {
+    $category_input = $_GET['category'];
+    if (is_string($category_input)) {
+        $url = explode('/', clean($category_input));
+    } else {
+        $url = [];
+    }
+}
+
+// INCLUDE ADDONS
+function readAddons(bool $return_values = true): ?string
+{
+    static $admin_mods = null;
+    global $url;
+
+    if ($admin_mods === null) {
+        $admin_mods = [];
+        $dir = 'addons/';
+
+        if (is_dir($dir) && $fd = opendir($dir)) {
+            while (($file = readdir($fd)) !== false) {
+                clearstatcache();
+                if ($file === '.' || $file === '..') {
+                    continue;
+                }
+
+                $name = str_replace('.php', '', $file);
+                $ext = pathinfo($file, PATHINFO_EXTENSION);
+                $is_rss_request = isset($url[0]) && is_string($url[0]) && str_starts_with($url[0], 'rss-');
+
+                if ($ext === 'php' && (_ADMIN || str_starts_with($name, 'auto_') || (isset($url[0]) && $url[0] === $name) || ($is_rss_request && str_starts_with($name, 'rss_')))) {
+                    include_once $dir . $file;
+                    if (function_exists('admin_' . $name)) {
+                        addRoute("admin_$name", "$name admin page", 'admin_' . $name);
+                        $admin_mods[] = 'admin_' . $name;
+                    }
+                    if (function_exists('public_' . $name)) {
+                        addRoute($name, "$name page", 'public_' . $name);
+                    }
+                }
+            }
+            closedir($fd);
+        }
+    }
+
+    if (!$return_values) {
+        return null;
+    }
+    return implode(',', $admin_mods);
+}
+readAddons(false);
+
+// LANGUAGE VARIABLES
+$lang_file = 'lang/' . s('language') . '.php';
+if (!empty(s('language')) && preg_match('/^[A-Za-z0-9_-]+$/', s('language')) && file_exists($lang_file)) {
+    require $lang_file;
 } else {
-$query = "SELECT id, name, description FROM " . _PRE . "extras ORDER BY id ASC";
-try {
-$result = $database->query($query);
-if ($result) {
-foreach ($result as $r) {
-echo '<p><strong>' . htmlspecialchars((string)$r['name'], ENT_QUOTES, 'UTF-8') . '</strong> ' . l('divider') . ' ';
-echo '<a href="' . _SITE . '?action=admin_groupings&amp;id=' . (int)$r['id'] . '" title="' . htmlspecialchars((string)$r['description'], ENT_QUOTES, 'UTF-8') . '">' . l('edit') . '</a>';
-echo '</p>';
-}
-} else {
-echo '<p>' . htmlspecialchars(l('group_not_exist'), ENT_QUOTES, 'UTF-8') . '</p>';
-}
-} catch (PDOException $e) {
-echo '<p>' . htmlspecialchars(l('group_not_exist'), ENT_QUOTES, 'UTF-8') . '</p>';
-}
-}
-echo '</div>';
+    if (file_exists('lang/EN.php')) {
+        require 'lang/EN.php';
+    } else {
+        die('Missing language configuration file.');
+    }
 }
 
-
-
-// SNEWS WYSIWYG EDITOR (HugeRTE: open-source fork of TinyMCE 6, MIT licence, no account and no API key)
-// The textarea stays the form field that is submitted. HugeRTE is loaded from the site's own js/hugerte/ folder;
-// when that folder is missing it is loaded from the jsDelivr CDN instead. If neither works, the textarea simply
-// stays visible as a plain HTML field, so editing is never blocked.
-function snews_editor(string $name = 'text', string $id = 'txt', string $value = '', string $label = ''): void {
-	static $script_loaded = false;
-
-	// Version of the files in js/hugerte/ (also used for the CDN fall-back address and as cache-buster).
-	$hr_version  = '1.0.15';
-	$hr_cdn_base = 'https://cdn.jsdelivr.net/npm/hugerte@' . $hr_version;
-	$hr_cdn_sri  = 'sha384-++SBz4ZNK6+Er6qC5+W/sGHuQz3OyR3PhHhoSCvXxuGruy5NYAaN4rkRfyZ1ne4o';
-
-	$local_dir = __DIR__ . '/js/hugerte';
-	$use_local = is_file($local_dir . '/hugerte.min.js');
-	$base_url  = $use_local ? _SITE . 'js/hugerte' : $hr_cdn_base;
-
-	$id_attr   = htmlspecialchars($id, ENT_QUOTES, 'UTF-8');
-	$name_attr = htmlspecialchars($name, ENT_QUOTES, 'UTF-8');
-
-	// Language of the editor interface. The packs are in js/hugerte/langs/; English is built in.
-	$site_lang = strtolower((string)s('language'));
-	$hr_langs  = ['nl' => 'nl', 'de' => 'de', 'fr' => 'fr_FR', 'es' => 'es', 'it' => 'it'];
-	$nl        = ($site_lang === 'nl');
-
-	$texts = [
-		'breakText'   => $nl ? 'Lees meer' : 'Read more',
-		'breakTip'    => $nl ? 'Lees-meer scheiding invoegen ([break])' : 'Insert read-more break ([break])',
-		'breakExists' => $nl ? 'Er staat al een [break] in de tekst.' : 'The text already contains a [break].',
-		'uploadFailed' => $nl ? 'Uploaden mislukt.' : 'Upload failed.',
-		'browseTitle'  => $nl ? 'Kies een afbeelding' : 'Choose an image',
-		'browseFilter' => $nl ? 'Zoeken op bestandsnaam...' : 'Search by file name...',
-		'browseEmpty'  => $nl ? 'Er staan nog geen afbeeldingen in de map images. Gebruik het tabblad Uploaden om er een toe te voegen.' : 'There are no pictures in the images folder yet. Use the Upload tab to add one.',
-		'browseNone'   => $nl ? 'Geen afbeeldingen gevonden.' : 'No pictures found.',
-		'browseFailed' => $nl ? 'De lijst met afbeeldingen kon niet worden opgehaald.' : 'The list of pictures could not be loaded.',
-		'browseMore'   => $nl ? 'Alleen de nieuwste afbeeldingen worden getoond. Gebruik het zoekveld.' : 'Only the newest pictures are shown. Use the search box.',
-		'cancel'       => $nl ? 'Annuleren' : 'Cancel',
-	];
-
-	// Picture upload: editor_upload.php (same folder as index.php) saves the picture in the images/ folder.
-	// It is only switched on when that file exists; without it the image dialog just asks for a web address.
-	$upload_url = is_file(__DIR__ . '/editor_upload.php') ? _SITE . 'editor_upload.php' : '';
-
-	// Same look as the text area the site used before (colours and sizes from style.css)
-	$content_style = 'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.65;color:#24292f;margin:12px 16px;}'
-		. 'p{margin:0 0 1em 0;}'
-		. 'h2,h3,h4{color:#a62300;margin:1.2em 0 .5em 0;font-weight:700;}'
-		. 'h2{font-size:1.45em;border-bottom:1px solid #eaeef2;padding-bottom:4px;}h3{font-size:1.25em;}h4{font-size:1.1em;}'
-		. 'ul,ol{margin:0 0 1.2em 2em;padding:0;}li{margin-bottom:.35em;}'
-		. 'a{color:#0969da;text-decoration:underline;}'
-		. 'img{max-width:100%;height:auto;border-radius:4px;}'
-		. 'blockquote{border-left:4px solid #0969da;margin:1.2em 0;padding:8px 16px;background:#f6f8fa;color:#57606a;border-radius:0 4px 4px 0;}'
-		. 'table{border-collapse:collapse;}td,th{border:1px solid #d0d7de;padding:4px 8px;}';
-
-	$config = [
-		'selector'                     => '#' . preg_replace('/[^A-Za-z0-9_-]/', '', $id),
-		// Where HugeRTE finds its own files (theme, skin, icons, plugins, languages)
-		'base_url'                     => $base_url,
-		'suffix'                       => '.min',
-		'plugins'                      => 'lists link image media table code fullscreen autoresize wordcount charmap searchreplace',
-		'menubar'                      => 'edit view insert format tools table',
-		'toolbar'                      => 'undo redo | blocks | bold italic underline strikethrough | bullist numlist blockquote | link image media table | snewsbreak | removeformat | code fullscreen',
-		'block_formats'                => $nl
-			? 'Paragraaf=p; Kop 2=h2; Kop 3=h3; Kop 4=h4; Citaat=blockquote'
-			: 'Paragraph=p; Heading 2=h2; Heading 3=h3; Heading 4=h4; Quote=blockquote',
-		'min_height'                   => 380,
-		'max_height'                   => 800,
-		'browser_spellcheck'           => true,
-		// Store the text exactly as typed: only & < > " are written as entities, links are not rewritten
-		'entity_encoding'              => 'raw',
-		'convert_urls'                 => false,
-		'relative_urls'                => false,
-		'remove_script_host'           => false,
-		'link_assume_external_targets' => 'https',
-		'content_style'                => $content_style,
-	];
-	if ($upload_url !== '') {
-		// Adds an "Upload" tab to the image dialog; pictures that are pasted or dragged into the text are uploaded too.
-		$config['automatic_uploads']     = true;
-		$config['paste_data_images']     = true;
-		$config['images_reuse_filename'] = true;
-		$config['images_file_types']     = 'jpg,jpeg,png,gif,webp';
-	} else {
-		$config['paste_data_images'] = false;
-	}
-	if ($use_local && isset($hr_langs[$site_lang]) && is_file($local_dir . '/langs/' . $hr_langs[$site_lang] . '.js')) {
-		$config['language']     = $hr_langs[$site_lang];
-		$config['language_url'] = $base_url . '/langs/' . $hr_langs[$site_lang] . '.js';
-	}
-
-	$js_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
-
-	echo '<div class="snews-editor-container">';
-	if ($label !== '') {
-		echo '<p class="snews-editor-label"><label for="' . $id_attr . '"><strong>' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . ':</strong></label></p>';
-	}
-
-	// This textarea is what the form submits. HugeRTE hides it and keeps it in sync;
-	// if HugeRTE cannot load (files missing, offline) it simply stays visible as a plain HTML field.
-	echo '<textarea name="' . $name_attr . '" id="' . $id_attr . '" class="snews-editor-textarea" rows="15" cols="100">' . htmlspecialchars($value, ENT_QUOTES, 'UTF-8') . '</textarea>';
-	echo '</div>';
-
-	if (!$script_loaded) {
-		if ($use_local) {
-			echo '<script src="' . htmlspecialchars($base_url, ENT_QUOTES, 'UTF-8') . '/hugerte.min.js?v=' . rawurlencode($hr_version) . '"></script>';
-		} else {
-			// Pinned version + integrity hash: the browser refuses the file if it was changed.
-			echo '<script src="' . htmlspecialchars($hr_cdn_base, ENT_QUOTES, 'UTF-8') . '/hugerte.min.js" integrity="' . $hr_cdn_sri . '" crossorigin="anonymous" referrerpolicy="no-referrer"></script>';
-		}
-		$script_loaded = true;
-	}
-
-	echo '<script>
-(function () {
-	if (typeof hugerte === "undefined") { return; }
-	var T = ' . json_encode($texts, $js_flags) . ';
-	var cfg = ' . json_encode($config, $js_flags) . ';
-	var UPLOAD_URL = ' . json_encode($upload_url, $js_flags) . ';
-	var CSRF = ' . json_encode(csrf_token(), $js_flags) . ';
-	if (UPLOAD_URL) {
-		// Sends the picture to editor_upload.php together with the CSRF token and returns its new address.
-		cfg.images_upload_handler = function (blobInfo, progress) {
-			return new Promise(function (resolve, reject) {
-				var fail = function (message) { reject({ message: message || T.uploadFailed, remove: true }); };
-				var xhr = new XMLHttpRequest();
-				xhr.open("POST", UPLOAD_URL);
-				xhr.withCredentials = true;
-				xhr.upload.onprogress = function (e) { if (e.lengthComputable) { progress(e.loaded / e.total * 100); } };
-				xhr.onerror = function () { fail(T.uploadFailed); };
-				xhr.onload = function () {
-					var json = null;
-					try { json = JSON.parse(xhr.responseText); } catch (e) { return fail(T.uploadFailed); }
-					if (xhr.status < 200 || xhr.status >= 300 || !json || typeof json.location !== "string") {
-						return fail(json && json.error && json.error.message);
-					}
-					resolve(json.location);
-				};
-				var form = new FormData();
-				form.append("csrf_token", CSRF);
-				form.append("file", blobInfo.blob(), blobInfo.filename());
-				xhr.send(form);
-			});
-		};
-
-		// "Browse existing images": a folder button next to the address field of the image dialog opens a gallery
-		// of the pictures that are already in the images/ folder (the list comes from editor_upload.php).
-		var esc = function (s) {
-			return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/\x27/g, "&#39;");
-		};
-		if (!document.getElementById("snews-gallery-css")) {
-			var css = document.createElement("style");
-			css.id = "snews-gallery-css";
-			css.textContent =
-				".snews-gallery-filter{box-sizing:border-box;width:100%;padding:8px 10px;margin:0 0 10px 0;border:1px solid #c4c9d0;border-radius:4px;font:inherit}" +
-				".snews-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;max-height:52vh;overflow:auto;padding:2px}" +
-				".snews-gallery-item{display:block;margin:0;padding:6px;background:#fff;border:1px solid #d0d7de;border-radius:6px;cursor:pointer;text-align:center;font:inherit}" +
-				".snews-gallery-item:hover,.snews-gallery-item:focus{border-color:#0969da;outline:2px solid #0969da;outline-offset:0}" +
-				".snews-gallery-item img{display:block;width:100%;height:96px;object-fit:contain;background:#f3f4f6;border-radius:3px}" +
-				".snews-gallery-item span{display:block;margin-top:5px;font-size:12px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
-				".snews-gallery-item small{display:block;font-size:11px;color:#6b7280}" +
-				".snews-gallery-msg{margin:6px 0;color:#57606a}";
-			document.head.appendChild(css);
-		}
-		cfg.file_picker_types = "image";
-		cfg.file_picker_callback = function (callback, value, meta) {
-			var editor = hugerte.activeEditor;
-			var form = new FormData();
-			form.append("csrf_token", CSRF);
-			form.append("action", "list");
-			fetch(UPLOAD_URL, { method: "POST", body: form, credentials: "same-origin" })
-				.then(function (r) { return r.json().then(function (j) { return { ok: r.ok, json: j }; }); })
-				.then(function (res) {
-					if (!res.ok || !res.json || !Array.isArray(res.json.images)) { throw new Error("list"); }
-					var images = res.json.images, html = "";
-					if (images.length === 0) {
-						html = "<p class=\"snews-gallery-msg\">" + esc(T.browseEmpty) + "</p>";
-					} else {
-						html = "<input type=\"search\" class=\"snews-gallery-filter\" placeholder=\"" + esc(T.browseFilter) + "\" autocomplete=\"off\">" +
-							"<p class=\"snews-gallery-msg snews-gallery-none\" style=\"display:none\">" + esc(T.browseNone) + "</p>" +
-							"<div class=\"snews-gallery\">";
-						images.forEach(function (im) {
-							var kb = Math.max(1, Math.round(im.size / 1024));
-							html += "<button type=\"button\" class=\"snews-gallery-item\" data-url=\"" + esc(im.url) + "\" data-name=\"" + esc(im.name) + "\">" +
-								"<img src=\"" + esc(im.url) + "\" alt=\"\" loading=\"lazy\">" +
-								"<span title=\"" + esc(im.name) + "\">" + esc(im.name) + "</span><small>" + kb + " KB</small></button>";
-						});
-						html += "</div>";
-						if (res.json.truncated) { html += "<p class=\"snews-gallery-msg\">" + esc(T.browseMore) + "</p>"; }
-					}
-					var onClick = function (e) {
-						var item = e.target.closest ? e.target.closest(".snews-gallery-item") : null;
-						if (!item) { return; }
-						e.preventDefault();
-						var name = item.getAttribute("data-name") || "";
-						var alt = name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ");
-						var url = item.getAttribute("data-url");
-						dialog.close();
-						callback(url, { alt: alt });
-					};
-					var onInput = function (e) {
-						var filter = e.target;
-						if (!filter.classList || !filter.classList.contains("snews-gallery-filter")) { return; }
-						var wrap = filter.closest(".snews-gallery-wrap");
-						if (!wrap) { return; }
-						var q = filter.value.toLowerCase(), shown = 0;
-						wrap.querySelectorAll(".snews-gallery-item").forEach(function (el) {
-							var hit = (el.getAttribute("data-name") || "").toLowerCase().indexOf(q) !== -1;
-							el.style.display = hit ? "" : "none";
-							if (hit) { shown++; }
-						});
-						var none = wrap.querySelector(".snews-gallery-none");
-						if (none) { none.style.display = shown === 0 ? "" : "none"; }
-					};
-					// Listeners on the page itself (they do not depend on when the dialog is drawn); removed again on close.
-					document.addEventListener("click", onClick, true);
-					document.addEventListener("input", onInput, true);
-					var dialog = editor.windowManager.open({
-						title: T.browseTitle,
-						size: "large",
-						body: { type: "panel", items: [{ type: "htmlpanel", html: "<div class=\"snews-gallery-wrap\">" + html + "</div>" }] },
-						buttons: [{ type: "cancel", text: T.cancel }],
-						onClose: function () {
-							document.removeEventListener("click", onClick, true);
-							document.removeEventListener("input", onInput, true);
-						}
-					});
-				})
-				.catch(function () {
-					editor.notificationManager.open({ text: T.browseFailed, type: "error", timeout: 5000 });
-				});
-		};
-	}
-	cfg.setup = function (editor) {
-		// sNews "read more" marker: the front end cuts the article at the text [break]
-		editor.ui.registry.addButton("snewsbreak", {
-			text: T.breakText,
-			tooltip: T.breakTip,
-			icon: "page-break",
-			onAction: function () {
-				if (editor.getContent({ format: "text" }).indexOf("[break]") !== -1) {
-					editor.notificationManager.open({ text: T.breakExists, type: "warning", timeout: 4000 });
-					return;
-				}
-				editor.insertContent("<p>[break]</p>");
-			}
-		});
-		// keep the textarea up to date so the form always submits the current text
-		editor.on("change input undo redo", function () { editor.save(); });
-	};
-	hugerte.init(cfg);
-})();
-</script>';
-}
-
-// ARTICLES FORM (PHP 8.1 safe: Herschreven naar PDO Prepared Statements en explicit variable scopes)
-function form_articles(string $contents): void {
-	$database = db();
-	if (!$database) {
-		return;
-	}
-
-	// Initialiseer alle formuliervariabelen vooraf om PHP 8.1 Undefined Variable Warnings te voorkomen
-	$article_category = 0;
-	$edit_option = 1;
-	$edit_page = 0;
-	$extraid = '';
-	$title = '';
-	$seftitle = '';
-	$text = '';
-	$dmeta = '';
-	$keywords = '';
-	$dtitle = 'YES';
-	$dinfo = 'YES';
-	$published = 1;
-	$showSub = 'NO';
-	$showHome = 'YES';
-	$artorder = 0;
-	$com = '';
-	
-	$frm_position1 = '';
-	$frm_position2 = '';
-	$frm_position3 = '';
-	$frm_fieldset = '';
-	$toggle_div = '';
-	$pos = 1;
-
-	if (isset($_GET['id']) && is_numeric($_GET['id'])) {
-		$id = (int)$_GET['id'];
-		
-		// FIX: Veilig herschreven naar Prepared Statement om SQL injection te elimineren
-		$query = "SELECT * FROM " . _PRE . "articles WHERE id = :id";
-		try {
-			$stmt = $database->prepare($query);
-			$stmt->execute(['id' => $id]);
-			$r = $stmt->fetch(PDO::FETCH_ASSOC);
-			
-			if ($r) {
-				$article_category = (int)($r['category'] ?? 0);
-				$edit_option      = (int)($r['position'] ?? 1) === 0 ? 1 : (int)$r['position'];
-				$edit_page        = (int)($r['page_extra'] ?? 0);
-				$extraid          = (string)($r['extraid'] ?? '');
-				$title            = (string)($r['title'] ?? '');
-				$seftitle         = (string)($r['seftitle'] ?? '');
-				$text             = (string)($r['text'] ?? '');
-				$dmeta            = (string)($r['description_meta'] ?? '');
-				$keywords         = (string)($r['keywords_meta'] ?? '');
-				$dtitle           = (string)($r['displaytitle'] ?? 'YES');
-				$dinfo            = (string)($r['displayinfo'] ?? 'YES');
-				$published        = (int)($r['published'] ?? 1);
-				$showSub          = (string)($r['show_in_subcats'] ?? 'NO');
-				$showHome         = (string)($r['show_on_home'] ?? 'YES');
-				$artorder         = (int)($r['artorder'] ?? 0);
-				$com              = (string)($r['commentable'] ?? '');
-				
-				switch ($edit_option) {
-					case 1:
-						$frm_fieldset = l('edit') . ' ' . l('article');
-						$toggle_div = 'show';
-						$frm_position1 = 'selected="selected"';
-						break;
-					case 2:
-						$frm_fieldset = l('edit') . ' ' . l('extra_contents');
-						$toggle_div = 'show';
-						$frm_position2 = 'selected="selected"';
-						break;
-					case 3:
-						$frm_fieldset = l('edit') . ' ' . l('page');
-						$toggle_div = 'show';
-						$frm_position3 = 'selected="selected"';
-						break;
-				}
-			}
-		} catch (PDOException $e) {
-			return;
-		}
-		
-		$frm_action = _SITE . '?action=process&task=admin_article&id=' . $id;
-		$frm_title = $_SESSION[_SITE . 'temp']['title'] ?? $title;
-		$frm_sef_title = isset($_SESSION[_SITE . 'temp']['seftitle']) ? cleanSEF($_SESSION[_SITE . 'temp']['seftitle']) : $seftitle;
-		$frm_text = isset($_SESSION[_SITE . 'temp']['text']) ? (string)$_SESSION[_SITE . 'temp']['text'] : $text;
-		$frm_meta_desc = isset($_SESSION[_SITE . 'temp']['description_meta']) ? cleanSEF($_SESSION[_SITE . 'temp']['description_meta']) : $dmeta;
-		$frm_meta_key = isset($_SESSION[_SITE . 'temp']['keywords_meta']) ? cleanSEF($_SESSION[_SITE . 'temp']['keywords_meta']) : $keywords;
-		
-		$frm_display_title = ($dtitle === 'YES') ? 'ok' : '';
-		$frm_display_info = ($dinfo === 'YES') ? 'ok' : '';
-		$frm_publish = ($published === 1) ? 'ok' : '';
-		$show_in_subcats = ($showSub === 'YES') ? 'ok' : '';
-		$frm_showonhome = ($showHome === 'YES') ? 'ok' : '';
-		$frm_commentable = ($com === 'YES' || $com === 'FREEZ') ? 'ok' : '';
-		$frm_task = 'edit_article';
-		$frm_submit = l('edit_button');
-		$pos = $edit_option;
-	} else {
-		switch ($contents) {
-			case 'article_new':
-				$edit_option = 1;
-				$frm_fieldset = l('article_new');
-				$toggle_div = '';
-				$pos = 1;
-				$frm_position1 = 'selected="selected"';
-				break;
-			case 'extra_new':
-				$edit_option = 2;
-				$edit_page = 0;
-				$frm_fieldset = l('extra_new');
-				$toggle_div = '';
-				$pos = 2;
-				$frm_position2 = 'selected="selected"';
-				break;
-			case 'page_new':
-				$edit_option = 3;
-				$frm_fieldset = l('page_new');
-				$toggle_div = '';
-				$pos = 3;
-				$frm_position3 = 'selected="selected"';
-				break;
-		}
-		
-		if (empty($frm_fieldset)) {
-			$frm_fieldset = l('article_new');
-		}
-		
-		$artorder = 0;
-		$frm_action = _SITE . '?action=process&task=admin_article';
-		$frm_title = $_SESSION[_SITE . 'temp']['title'] ?? '';
-		$frm_sef_title = isset($_SESSION[_SITE . 'temp']['seftitle']) ? cleanSEF($_SESSION[_SITE . 'temp']['seftitle']) : '';
-		$frm_text = $_SESSION[_SITE . 'temp']['text'] ?? '';
-		$frm_meta_desc = isset($_SESSION[_SITE . 'temp']['description_meta']) ? cleanSEF($_SESSION[_SITE . 'temp']['description_meta']) : '';
-		$frm_meta_key = isset($_SESSION[_SITE . 'temp']['keywords_meta']) ? cleanSEF($_SESSION[_SITE . 'temp']['keywords_meta']) : '';
-		
-		$frm_display_title = 'ok';
-		$frm_display_info = ($contents === 'extra_new') ? '' : 'ok';
-		$frm_publish = 'ok';
-		$show_in_subcats = 'ok';
-		$frm_showonhome = (s('display_new_on_home') === 'on') ? 'ok' : '';
-		$frm_commentable = ($contents === 'extra_new' || $contents === 'page_new' || s('enable_comments') !== 'YES') ? '' : 'ok';
-		$frm_task = 'add_article';
-		$frm_submit = l('submit');
-	}
-	
-	$catnum = stats('categories', '');
-	if ($contents === 'article_new' && (int)$catnum < 1) {
-		echo htmlspecialchars(l('create_cat'), ENT_QUOTES, 'UTF-8');
-	} else {
-		echo html_input('form', '', 'post', '', '', '', '', '', '', '', '', '', 'post', $frm_action, '');
-		echo csrf_field();
-		echo '<div class="adminpanel">';
-		
-		if (!empty($toggle_div) && $toggle_div === 'show') {
-			echo '<p class="admintitle"><a onclick="toggle(\'edit_article\')" style="cursor: pointer;" title="' . htmlspecialchars($frm_fieldset, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($frm_fieldset, ENT_QUOTES, 'UTF-8') . '</a></p>';
-			echo '<div id="edit_article" style="display: none;">';
-		} else {
-			echo '<p class="admintitle">' . htmlspecialchars($frm_fieldset, ENT_QUOTES, 'UTF-8') . '</p>';
-		}
-		
-		echo html_input('text', 'title', 'at', $frm_title, l('title'), '', 'onchange="genSEF(this,document.forms[\'post\'].seftitle)"', 'onkeyup="genSEF(this,document.forms[\'post\'].seftitle)"', '', '', '', '', '', '', '');
-		
-		if ($contents === 'extra_new' || $edit_option === 2) {
-			echo '<div style="display: none;">';
-			echo html_input('text', 'seftitle', 'as', $frm_sef_title, l('sef_title'), '', '', '', '', '', '', '', '', '', '');
-			echo '</div>';
-		} else {
-			echo html_input('text', 'seftitle', 'as', $frm_sef_title, l('sef_title'), '', '', '', '', '', '', '', '', '', '');
-		}
-		
-		snews_editor('text', 'txt', $frm_text, l('text'));
-
-				# ARTICLE OR EXTRA (PHP 8.1 safe: prepared loops en scope-initialisatie)
-		$contents_str = (string)($contents ?? '');
-		$edit_option_int = (int)($edit_option ?? 1);
-		$article_category_int = isset($article_category) ? (int)$article_category : -1;
-		$edit_page_int = (int)($edit_page ?? 0);
-		
-		if ($contents_str !== 'page_new' && $edit_option_int !== 3) {
-			echo '<p><label for="cat">';
-			
-			# NEW EXTRA OR ARTICLE TITELS
-			echo ($contents_str === 'extra_new' || $edit_option_int === 2) ? htmlspecialchars(l('appear_category'), ENT_QUOTES, 'UTF-8') : htmlspecialchars(l('category'), ENT_QUOTES, 'UTF-8');
-			
-			if ($contents_str === 'extra_new' || $edit_option_int === 2) {
-				echo ':</label><br /><select name="define_category" id="cat" onchange="dependancy(\'extra\');">';
-				echo '<option value="-1"' . ($article_category_int === -1 ? ' selected="selected"' : '') . '>' . htmlspecialchars(l('all'), ENT_QUOTES, 'UTF-8') . '</option>';
-				echo '<option value="-3"' . ($article_category_int === -3 ? ' selected="selected"' : '') . '>' . htmlspecialchars(l('page_only'), ENT_QUOTES, 'UTF-8') . '</option>';
-			} else {
-				echo ':</label><br /><select name="define_category" id="cat" onchange="dependancy(\'snews_articles\');">';
-			}
-			
-			# CATEGORIES AND SUB-CATEGORIES (Herschreven naar veilige parameter binding loops)
-			$database = db();
-			if ($database) {
-				$category_query = "SELECT id, name, subcat FROM " . _PRE . "categories WHERE published = 'YES' AND subcat = 0 ORDER BY catorder, id ASC";
-				try {
-					$cat_result = $database->query($category_query);
-					if ($cat_result) {
-						// Bereid de subquery vooraf voor om parser warnings in de loop te elimineren
-						$subquery_str = "SELECT id, name, subcat FROM " . _PRE . "categories WHERE subcat = :parent_id ORDER BY catorder, id ASC";
-						$stmt_sub = $database->prepare($subquery_str);
-						
-						foreach ($cat_result as $cat) {
-							$cat_id = (int)$cat['id'];
-							$sel = ($article_category_int === $cat_id) ? ' selected="selected"' : '';
-							echo '<option value="' . $cat_id . '"' . $sel . '>' . htmlspecialchars((string)$cat['name'], ENT_QUOTES, 'UTF-8') . '</option>';
-							
-							// FIX: Veilig uitgevoerd via prepared parameter binding om de array string literal syntax error te tackelen
-							$stmt_sub->execute(['parent_id' => $cat_id]);
-							while ($s = $stmt_sub->fetch(PDO::FETCH_ASSOC)) {
-								$sub_id = (int)$s['id'];
-								$sub_sel = ($article_category_int === $sub_id) ? ' selected="selected"' : '';
-								echo '<option value="' . $sub_id . '"' . $sub_sel . '>--' . htmlspecialchars((string)$s['name'], ENT_QUOTES, 'UTF-8') . '</option>';
-							}
-						}
-					}
-				} catch (PDOException $e) {}
-			}
-			echo '</select></p>';
-			
-			# EXTRA COMPONENT RENDERING
-			if ($contents_str === 'extra_new' || $edit_option_int === 2) {
-				$sub_display = ($article_category_int === -1) ? 'inline' : 'none';
-				echo '<div id="def_subcat" style="display:' . $sub_display . ';"><p>';
-				echo html_input('checkbox', 'show_in_subcats', 'asc', 'YES', l('show_in_subcats'), '', '', '', '', ($show_in_subcats ?? ''), '', '', '', '', '');
-				echo '</p></div>';
-				
-				$none_display = ($article_category_int === -1) ? 'none' : 'inline';
-				echo '<div id="def_page" style="display:' . $none_display . ';"><p>';
-				echo '<label for="dp">' . htmlspecialchars(l('appear_page'), ENT_QUOTES, 'UTF-8') . ':</label><br /><select name="define_page" id="dp">';
-				echo '<option value="0"' . ($edit_option_int !== 2 ? ' selected="selected"' : '') . '>' . htmlspecialchars(l('all'), ENT_QUOTES, 'UTF-8') . '</option>';
-				
-				if ($database) {
-					$query = "SELECT id, title FROM " . _PRE . "articles WHERE position = 3 ORDER BY id ASC";
-					try {
-						$result = $database->query($query);
-						if ($result) {
-							$edit_page_int = (int)($edit_page ?? 0);
-							foreach ($result as $r) {
-								$sel = ($edit_page_int === (int)$r['id']) ? ' selected="selected"' : '';
-								echo '<option value="' . (int)$r['id'] . '"' . $sel . '>' . htmlspecialchars((string)$r['title'], ENT_QUOTES, 'UTF-8') . '</option>';
-							}
-						}
-					} catch (PDOException $e) {}
-				}
-				echo '</select><br /></p></div>';
-			}
-		}
-		
-		if ($contents_str === 'article_new' || $edit_option_int === 1) {
-		 	echo html_input('checkbox', 'show_on_home', 'sho', 'YES', l('show_on_home'), '', '', '', '', ($frm_showonhome ?? ''), '', '', '', '', '');
-		}
-		echo html_input('checkbox', 'publish_article', 'pu', 'YES', l('publish_article'), '', '', '', '', ($frm_publish ?? ''), '', '', '', '', '');
-		
-		if (!empty($toggle_div) && $toggle_div === 'show') {
-			echo '</div>';
-		}
-		echo '</div>';
-		
-		# PREVIEW PANEL
-		echo '<div class="adminpanel">';
-		echo '<p class="admintitle"><a onclick="toggle(\'preview\')" style="cursor: pointer;" title="' . htmlspecialchars(l('preview'), ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars(l('preview'), ENT_QUOTES, 'UTF-8') . '</a></p>';
-		echo '<div id="preview" style="display: none;"></div>';
-		echo '</div>';
-		
-		# CUSTOMIZE PANEL
-		echo '<div class="adminpanel">';
-		echo '<p class="admintitle"><a onclick="toggle(\'customize\')" style="cursor: pointer;" title="' . htmlspecialchars(l('customize'), ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars(l('customize'), ENT_QUOTES, 'UTF-8') . '</a></p>';
-		echo '<div id="customize" style="display: none;">';
-		
-		# EXTRA OPTIONS
-		if ($contents_str === 'extra_new' || $edit_option_int === 2) {
-			if (s('enable_extras') === 'YES') {
-				echo '<p><label for="ext">' . htmlspecialchars(l('define_extra'), ENT_QUOTES, 'UTF-8') . '</label><br /><select name="define_extra" id="ext">';
-				if ($database) {
-					$extra_query = "SELECT id, name FROM " . _PRE . "extras ORDER BY id ASC";
-					try {
-						$extra_result = $database->query($extra_query);
-						if ($extra_result) {
-							$extraid_str = (string)($extraid ?? '');
-							foreach ($extra_result as $ex) {
-								$sel = ($contents_str !== 'extra_new' && $extraid_str === (string)$ex['id']) ? ' selected="selected"' : '';
-								echo '<option value="' . (int)$ex['id'] . '"' . $sel . '>' . htmlspecialchars((string)$ex['name'], ENT_QUOTES, 'UTF-8') . '</option>';
-							}
-						}
-					} catch (PDOException $e) {}
-				}
-				echo '</select></p>';
-			} else {
-				echo html_input('hidden', 'define_extra', 'ext', '1', '', '', '', '', '', '', '', '', '', '', '');
-			}
-		}
-		
-		# NEW POSITION OPTIONS
-		if (!empty($id)) {
-			echo '<p><label for="pos">' . htmlspecialchars(l('position'), ENT_QUOTES, 'UTF-8') . ':</label><br /><select name="position" id="pos">';
-			echo '<option value="1"' . ($frm_position1 ?? '') . '>' . htmlspecialchars(l('center'), ENT_QUOTES, 'UTF-8') . '</option>';
-			echo '<option value="2"' . ($frm_position2 ?? '') . '>' . htmlspecialchars(l('side'), ENT_QUOTES, 'UTF-8') . '</option>';
-			echo '<option value="3"' . ($frm_position3 ?? '') . '>' . htmlspecialchars(l('display_page'), ENT_QUOTES, 'UTF-8') . '</option>';
-			echo '</select></p>';
-		} else {
-			$pos = $contents_str === 'article_new' ? 1 : ($contents_str === 'extra_new' ? 2 : 3);
-			echo html_input('hidden', 'position', 'position', (string)$pos, '', '', '', '', '', '', '', '', '', '', '');
-		}
-		
-		if ($contents_str !== 'extra_new' && $edit_option_int !== 2) {
-			echo html_input('text', 'description_meta', 'dm', ($frm_meta_desc ?? ''), l('description_meta'), '', '', '', '', '', '', '', '', '', '');
-			echo html_input('text', 'keywords_meta', 'km', ($frm_meta_key ?? ''), l('keywords_meta'), '', '', '', '', '', '', '', '', '', '');
-		}
-		echo html_input('checkbox', 'display_title', 'dti', 'YES', l('display_title'), '', '', '', '', ($frm_display_title ?? ''), '', '', '', '', '');
-		
-		if ($contents_str !== 'extra_new' && $edit_option_int !== 2) {
-			echo html_input('checkbox', 'display_info', 'di', 'YES', l('display_info'), '', '', '', '', ($frm_display_info ?? ''), '', '', '', '', '');
-			echo html_input('checkbox', 'commentable', 'ca', 'YES', l('enable_commenting'), '', '', '', '', ($frm_commentable ?? ''), '', '', '', '', '');
-			
-			// FIX: Voorkom PHP 8.1 undefined variable warnings op $r door eerst isset check uit te voeren
-			if (!empty($id) && isset($r) && is_array($r)) {
-				$comment_status_db = (string)($r['commentable'] ?? '');
-				$checked_attr = ($comment_status_db === 'FREEZ') ? ' checked="checked"' : '';
-				echo '<p><input name="freeze" type="checkbox" id="fc"' . $checked_attr . ' /> <label for="fc"> ' . htmlspecialchars(l('freeze_comments'), ENT_QUOTES, 'UTF-8') . '</label></p>';
-			}
-		}
-		echo '</div></div>';
-		
-		# PUBLISH DATE SCHEDULER
-		if ($contents_str === 'article_new' || $edit_option_int === 1) {
-			echo '<div class="adminpanel">';
-			echo '<p class="admintitle"><a onclick="toggle(\'admin_publish_date\')" style="cursor: pointer;" title="' . htmlspecialchars(l('publish_date'), ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars(l('publish_date'), ENT_QUOTES, 'UTF-8') . '</a></p>';
-			echo '<div id="admin_publish_date" style="display: none;">';
-
-			$onoff_status = (isset($r) && is_array($r) && (string)($r['published'] ?? '') === '2') ? 'ok' : '';
-			echo html_input('checkbox', 'fposting', 'fp', 'YES', l('enable'), '', '', '', '', $onoff_status, '', '', '', '', '');
-			echo '<p>' . htmlspecialchars(l('server_time'), ENT_QUOTES, 'UTF-8') . ': ' . date('Y-m-d H:i:s') . '</p>';
-			echo '<p>' . htmlspecialchars(l('article_date'), ENT_QUOTES, 'UTF-8') . '</p>';
-
-			if (!empty($id) && isset($r) && is_array($r) && !empty($r['date'])) {
-				posting_time((string)$r['date']);
-			} else {
-				posting_time();
-			}
-			echo '</div></div>';
-		}
-
-		echo '<p>';
-		echo html_input('hidden', 'action', 'action', 'process', '', '', '', '', '', '', '', '', '', '', '');
-		echo html_input('hidden', 'task', 'task', 'admin_article', '', '', '', '', '', '', '', '', '', '', '');
-		echo html_input('submit', $frm_task, $frm_task, $frm_submit, '', 'button', '', '', '', '', '', '', '', '', '');
-
-		if (!empty($id)) {
-			echo html_input('hidden', 'artorder', 'artorder', (string)$artorder, '', '', '', '', '', '', '', '', '', '', '');
-			echo html_input('hidden', 'article_category', 'article_category', (string)$article_category, '', '', '', '', '', '', '', '', '', '', '');
-			echo html_input('hidden', 'id', 'id', (string)$id, '', '', '', '', '', '', '', '', '', '', '') . ' ';
-			echo html_input('submit', 'delete_article', 'delete_article', l('delete'), '', 'button', 'onclick="return pop(\'' . htmlspecialchars(l('js_delete2'), ENT_QUOTES, 'UTF-8') . '\')"', '', '', '', '', '', '', '', '');
-		}
-		echo '</p></form>';
-    	} // <-- VOEG DEZE TOE (sluit de 'else' op regel 812)
-		} // <-- (sluit de functie 'form_articles' op regel 664)
-
-
-
-// PRINT ARTICLE DETAILS (PHP 8.1 safe: strikte string casting en veilige datum parsing)
-function printArticleDetails(array $articleData, string $articleClass, mixed $order): void {
-	$order_input = '';
-	if ($order !== null) {
-		$order_input = '<input type="text" name="page_' . (int)$articleData['id'] . '" value="' . (int)$articleData['artorder'] . '" size="1" tabindex="' . (int)$order . '" /> &nbsp;';
-	}
-	
-	$date_formatted = !empty($articleData['date']) ? date((string)s('date_format'), strtotime((string)$articleData['date'])) : '';
-	echo '<p>' . $order_input . '<strong title="' . htmlspecialchars($date_formatted, ENT_QUOTES, 'UTF-8') . '">	' . htmlspecialchars((string)$articleData['title'], ENT_QUOTES, 'UTF-8') . '</strong> ';
-	
-	$url = isset($articleData['catSEF']) ? (string)$articleData['catSEF'] . '/' . (string)$articleData['seftitle'] : (string)$articleData['seftitle'];
-	if ($articleClass !== 'extra_contents') {
-		echo l('divider') . ' <a href="' . _SITE . htmlspecialchars($url, ENT_QUOTES, 'UTF-8') . '/">' . l('view') . '</a> ';
-	}
-	
-	if (isset($articleData['default_page']) && $articleData['default_page'] !== 'YES') {
-		echo l('divider') . ' <a href="' . _SITE . '?action=admin_article&amp;id=' . (int)$articleData['id'] . '">' . l('edit') . '</a> ';
-	}
-	
-	$visiblity = (string)($articleData['visible'] ?? 'YES') === 'YES' ?
-		'<a href="' . _SITE . '?action=hide&amp;item=' . htmlspecialchars($articleClass, ENT_QUOTES, 'UTF-8') . '&amp;id=' . (int)$articleData['id'] . '&amp;' . csrf_query() . '">' . l('hide') . '</a>' :
-		l('hidden') . ' ( <a href="' . _SITE . '?action=show&amp;item=' . htmlspecialchars($articleClass, ENT_QUOTES, 'UTF-8') . '&amp;id=' . (int)$articleData['id'] . '&amp;' . csrf_query() . '">' . l('show') . '</a> )';
-		
-	echo ' ' . l('divider') . ' ' . $visiblity;
-	
-	if ((int)($articleData['published'] ?? 1) === 2) {
-		echo l('divider') . ' [' . l('status') . ' ' . l('future_posting') . ']';
-	}
-	if ((int)($articleData['published'] ?? 1) === 0) {
-		echo l('divider') . ' [' . l('status') . ' ' . l('unpublished') . ']';
-	}
-	echo '</p>';
-}
-
-// ARTICLES (PHP 8.1 safe: Herschreven naar PDO Prepared Statements en herstelde array inspecties)
-function admin_articles(string $contents): void {
-	$database = db();
-	if (!$database) {
-		return;
-	}
-
-	global $categorySEF, $subcatSEF;
-	$categorySEF_str = (string)($categorySEF ?? '');
-	$subcatSEF_str = (string)($subcatSEF ?? '');
-	
-	$link = '<a href="' . _SITE . htmlspecialchars($categorySEF_str, ENT_QUOTES, 'UTF-8') . '/';
-	$item = $contents === 'extra_view' ? 'extra_contents' : 'snews_articles';
-	
-	$filter_year = defined('DBTYPE') && DBTYPE === 'sqlite' ? "strftime('%Y', date)" : "YEAR(date)";
-	$filter_month = defined('DBTYPE') && DBTYPE === 'sqlite' ? "strftime('%m', date)" : "MONTH(date)";
-	
-	$p = 1;
-	$qw = 'position < 2 AND position > -1';
-	$title = l('articles');
-	$sef = 'article_new';
-	$goto = 'snews_articles';
-
-	switch ($contents) {
-		case 'article_view':
-			$title = l('articles');
-			$sef = 'article_new';
-			$goto = 'snews_articles';
-			$p = 1;
-			$qw = 'position < 2 AND position > -1';
-			break;
-		case 'extra_view':
-			$title = l('extra_contents');
-			$sef = 'extra_new';
-			$goto = 'extra_contents';
-			$p = 2;
-			$qw = 'position = 2';
-			break;
-		case 'page_view':
-			$title = l('pages');
-			$sef = 'page_new';
-			$p = 3;
-			$goto = 'snews_pages';
-			$qw = 'position = 3';
-			break;
-	}
-
-	# PUT OPTIONS IN ARRAY (PHP 8.1 safe array initialisatie zonder loze pointers)
-	$option = ['option' => '', 'extraid' => '', 'year' => '', 'month' => ''];
-	if (!empty($subcatSEF_str) && $subcatSEF_str !== 'extras') {
-		$array = explode(';', $subcatSEF_str);
-		foreach ($array as $key_item) {
-			$val = explode('=', $key_item);
-			if (!isset($val[1])) {
-				$option['option'] = $val[0];
-			} else {
-				$option[$val[0]] = $val[1];
-			}
-		}
-	}
-	
-	$mextra = (s('enable_extras') === 'YES' && $p === 2 && empty($option['extraid'])) ? ' / ' . $link . 'extras/">' . l('extra') . '</a>' : '';
-	$filter_extra = !empty($option['extraid']) ? ';extraid=' . $option['extraid'] : '';
-	
-	if (stats('articles', $p) > 0) {
-		$add = ' - <a href="' . $sef . '/" title="' . htmlspecialchars(l('add_new'), ENT_QUOTES, 'UTF-8') . '">' . l('add_new') . '</a> - ' . l('see') . ' (' . $link . '">' . l('all') . '</a>) - ' . l('filter') . ' (' . $link . 'year' . $filter_extra . '">' . l('year') . '</a> / ' . $link . 'month' . $filter_extra . '">' . l('month') . '</a>' . $mextra . ')';
-	} else {
-		$add = '';
-	}
-	
-	# MULTI-EXTRAS
-	if ($subcatSEF_str === 'extras') {
-		echo '<div class="adminpanel">';
-		echo '<p class="admintitle">' . l('articles') . ' - ' . l('filter') . ' <span style="color: #0000FF">' . htmlspecialchars($subcatSEF_str, ENT_QUOTES, 'UTF-8') . '</span> - ' . l('see') . ' (' . $link . '">' . l('all') . '</a>) - ' . l('filter') . ' (' . $link . 'year">' . l('year') . '</a> / ' . $link . 'month">' . l('month') . '</a>)</p>';
-		
-		$xquery = "SELECT id, name, seftitle FROM " . _PRE . "extras";
-		try {
-			if ($xres = $database->query($xquery)) {
-				foreach ($xres as $rpx) {
-					echo '<p>' . $link . 'extraid=' . (int)$rpx['id'] . '">' . htmlspecialchars((string)$rpx['name'], ENT_QUOTES, 'UTF-8') . '</a></p>';
-				}
-			}
-		} catch (PDOException $e) {}
-		echo '</div>';
-		return;
-	}
-	
-	# OPTION YEAR AND MONTH
-	if ($subcatSEF_str === 'year' || $subcatSEF_str === 'month' || !empty($option['option'])) {
-		$filter = ($subcatSEF_str === 'year' || $option['option'] === 'year') ? l('year') : l('month');
-		echo '<div class="adminpanel">';
-		echo '<p class="admintitle">' . l('articles') . ' - ' . l('filter') . ' <span style="color: #0000FF">' . htmlspecialchars($filter, ENT_QUOTES, 'UTF-8') . '</span> - ' . l('see') . ' (' . $link . '">' . l('all') . '</a>) - ' . l('filter') . ' (' . $link . 'year' . $filter_extra . '">' . l('year') . '</a> / ' . $link . 'month' . $filter_extra . '">' . l('month') . '</a> ' . $mextra . ')</p><br /><p>';
-		
-		$month_names = explode(', ', l('month_names'));
-		$query = "SELECT DISTINCT($filter_year) AS dyear FROM " . _PRE . "articles WHERE $qw ORDER BY date DESC";
-		
-		try {
-			if ($sqr = $database->query($query)) {
-				foreach ($sqr as $r) {
-					$ryear = (string)$r['dyear'];
-					echo ($subcatSEF_str === 'month' || $option['option'] === 'month') ?
-						'<span style="color: #0000FF">' . htmlspecialchars($ryear, ENT_QUOTES, 'UTF-8') . '</span>' :
-						$link . 'year=' . htmlspecialchars($ryear, ENT_QUOTES, 'UTF-8') . $filter_extra . '">' . htmlspecialchars($ryear, ENT_QUOTES, 'UTF-8') . '</a> ';
-						
-					if ($subcatSEF_str === 'month' || $option['option'] === 'month') {
-						$qx = "SELECT DISTINCT(" . $filter_month . ") AS dmonth FROM " . _PRE . "articles WHERE $qw AND $filter_year = :ryear ORDER BY date ASC";
-						$stmt_month = $database->prepare($qx);
-						$stmt_month->execute(['ryear' => $ryear]);
-						
-						while ($rx = $stmt_month->fetch(PDO::FETCH_ASSOC)) {
-							$m = (int)$rx['dmonth'] - 1;
-							$month_label = $month_names[$m] ?? (string)$rx['dmonth'];
-							echo ' ' . l('divider') . ' ' . $link . 'year=' . htmlspecialchars($ryear, ENT_QUOTES, 'UTF-8') . ';' . 'month=' . (int)$rx['dmonth'] . $filter_extra . '">' . htmlspecialchars($month_label, ENT_QUOTES, 'UTF-8') . '</a> ';
-						}
-					}
-					echo '<br />';
-				}
-			}
-		} catch (PDOException $e) {}
-		echo '</p></div>';
-		return;
-	}
-	
-	$year = $option['year'] !== '' ? $option['year'] : '';
-	$month = $option['month'] !== '' ? $option['month'] : '';
-	
-	$queryParams = [];
-	$filterquery = '';
-	if (!empty($year)) {
-		$filterquery .= " AND $filter_year = :year";
-		$queryParams['year'] = $year;
-	}
-	if (!empty($month)) {
-		$filterquery .= " AND $filter_month = :month";
-		$queryParams['month'] = $month;
-	}
-	
-	$no_content = !empty($filterquery) ? '<p>' . htmlspecialchars(l('no_content_for_filter'), ENT_QUOTES, 'UTF-8') . '</p>' : '<p>' . htmlspecialchars(l('article_not_exist'), ENT_QUOTES, 'UTF-8') . '</p>';
-	
-	echo html_input('form', '', 'post', '', '', '', '', '', '', '', '', '', 'post', '?action=process&amp;task=reorder', '');
-	echo csrf_field();
-	echo '<div class="adminpanel">';
-	echo '<p class="admintitle">' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . $add . '</p>';
-	echo '<p><input type="hidden" name="order" id="order" value="' . htmlspecialchars($goto, ENT_QUOTES, 'UTF-8') . '" /></p>';
-	
-	# EXTRA CONTENT RENDERING GECORRIGEERD
-	if ($contents === 'extra_view') {
-		$sqx_clause = '';
-		if (!empty($option['extraid'])) {
-			$sqx_clause = " AND extraid = :extraid";
-			$queryParams['extraid'] = (int)$option['extraid'];
-		}
-		
-		$cat_array_irregular = ['-1', '-3'];
-		foreach ($cat_array_irregular as $cat_value) {
-			$cat_value_int = (int)$cat_value;
-			$legend_label = $cat_value_int === -3 ? l('pages') : l('all');
-			$page_only_xsql = $cat_value_int === -3 ? 'page_extra ASC,' : '';
-			
-			$sql = "SELECT id, title, seftitle, date, published, artorder, visible, default_page, page_extra
-				FROM " . _PRE . "articles
-				WHERE category = :cat_value
-					AND position = :position $filterquery $sqx_clause
-				ORDER BY $page_only_xsql artorder ASC, date DESC";
-				
-			$loopParams = array_merge($queryParams, ['cat_value' => $cat_value_int, 'position' => $p]);
-			
-			$num_rows = stats('articles', '', "category = " . $cat_value_int . " AND position = " . $p . " " . (!empty($filterquery) ? "AND $filter_year = " . (int)$year : ''));
-			$tab = 1;
-			
-			echo '<div class="innerpanel">';
-			echo '<p class="admintitle">' . htmlspecialchars($legend_label, ENT_QUOTES, 'UTF-8') . '</p>';
-			
-			if ($num_rows === 0) {
-				echo $no_content;
-			} else {
-				try {
-					$stmt_art = $database->prepare($sql);
-					$stmt_art->execute($loopParams);
-					$lbl_filter = -5;
-					
-					while ($r = $stmt_art->fetch(PDO::FETCH_ASSOC)) {
-						if ($cat_value_int === -3 && $lbl_filter !== (int)$r['page_extra']) {
-							$assigned_page_res = retrieve('title', 'articles', 'id', $r['page_extra']);
-							$assigned_page = is_array($assigned_page_res) ? ($assigned_page_res['title'] ?? '') : (string)$assigned_page_res;
-							echo '<p><strong>' . (!$assigned_page ? htmlspecialchars(l('all_pages'), ENT_QUOTES, 'UTF-8') : htmlspecialchars($assigned_page, ENT_QUOTES, 'UTF-8')) . '</strong></p>';
-							}
-
-
-						printArticleDetails($r, $item, $tab);
-						$tab++;
-						$lbl_filter = (int)$r['page_extra'];
-						}
-						} catch (PDOException $e) {
-						echo $no_content;
-						}
-						}
-						echo '</div>';
-						}
-						}
-
-
-		# ARTICLE OR EXTRA (PHP 8.1 safe: prepared loops en strict arrays)
-	if ($contents === 'article_view' || $contents === 'extra_view') {
-		$num = stats('categories', '', 'subcat = 0');
-		if ($num === 0) {
-			echo '<p>' . htmlspecialchars(l('no_categories'), ENT_QUOTES, 'UTF-8') . '</p>';
-		} else {
-			$nsql = ($p === 1 ? "category < 1" : "") . ($p === 2 ? "category = 0" : "");
-			
-			// Initialiseer filters en fallbacks voor de database binding
-			$filterquery = $filterquery ?? '';
-			$subquery = $subquery ?? '';
-			$no_content = $no_content ?? '';
-			$tab = $tab ?? 1;
-			
-			$num_rows = stats('articles', '', $nsql . ' AND position = ' . $p . ' ' . $subquery);
-			$sql = "SELECT id, title, seftitle, date, published, artorder, visible, default_page
-				FROM " . _PRE . "articles
-				WHERE " . $nsql . " AND position = :position
-				ORDER BY artorder ASC, date DESC";
-				
-			try {
-				if ($num_rows > 0) {
-					echo '<div class="innerpanel">';
-					echo '<p class="admintitle">' . htmlspecialchars(l('no_category_set'), ENT_QUOTES, 'UTF-8') . '</p>';
-					
-					$stmt = $database->prepare($sql);
-					$stmt->execute(['position' => $p]);
-					while ($O = $stmt->fetch(PDO::FETCH_ASSOC)) {
-						printArticleDetails($O, $item, $tab);
-						$tab++;
-					}
-					echo '</div>';
-				}
-				
-				$cat_query = "SELECT id, name, seftitle FROM " . _PRE . "categories WHERE subcat = 0";
-				$cat_res = $database->query($cat_query);
-				
-				if ($cat_res) {
-					// Bereid de dynamische queries vooraf voor om loopprestaties in PHP 8.1 te optimaliseren
-					$sql1 = "SELECT id, title, seftitle, date, published, artorder, visible, default_page
-						FROM " . _PRE . "articles
-						WHERE category = :cat_id AND position = :position $filterquery
-						ORDER BY artorder ASC, date DESC";
-					$stmt_sql1 = $database->prepare($sql1);
-					
-					$query2 = "SELECT id, name, seftitle FROM " . _PRE . "categories WHERE subcat = :cat_id ORDER BY catorder ASC";
-					$stmt_query2 = $database->prepare($query2);
-					
-					$catart_sql2 = "SELECT id, title, seftitle, date, published, artorder, visible, default_page
-						FROM " . _PRE . "articles
-						WHERE category = :subcat_id $subquery $filterquery
-						ORDER BY category ASC, artorder ASC, date DESC";
-					$stmt_catart2 = $database->prepare($catart_sql2);
-					
-					foreach ($cat_res as $row) {
-						$row_id = (int)$row['id'];
-						echo '<div class="adminpanel">';
-						echo '<p class="admintitle">' . htmlspecialchars((string)$row['name'], ENT_QUOTES, 'UTF-8') . '</p>';
-						
-						// FIX: Veilig uitgevoerd via prepared parameter binding om de array string literal syntax error te elimineren
-						$stmt_sql1->execute(['cat_id' => $row_id, 'position' => $p]);
-						$articles_row = $stmt_sql1->fetchAll(PDO::FETCH_ASSOC);
-						
-						$num_rows = stats('articles', '', 'category = ' . $row_id . ' AND position = ' . $p . ' ' . $subquery . ' ' . $filterquery);
-						if ($num_rows === 0) {
-							echo $no_content;
-						} else {
-							foreach ($articles_row as $r) {
-								$r['catSEF'] = $row['seftitle'];
-								printArticleDetails($r, $item, $tab);
-								$tab++;
-							}
-						}
-						
-						$stmt_query2->execute(['cat_id' => $row_id]);
-						$tab2 = 1;
-						
-						while ($row2 = $stmt_query2->fetch(PDO::FETCH_ASSOC)) {
-							$row2_id = (int)$row2['id'];
-							echo '<a class="subcat" onclick="toggle(\'subcat' . $row2_id . '\')" style="cursor: pointer;">' . htmlspecialchars((string)$row2['name'], ENT_QUOTES, 'UTF-8') . '</a><br />';
-							echo '<div id="subcat' . $row2_id . '" style="display: none;" class="subcat">';
-							
-							$stmt_catart2->execute(['subcat_id' => $row2_id]);
-							$num_rows2 = stats('articles', '', 'category = ' . $row2_id . ' ' . $subquery . ' ' . $filterquery);
-							if ($num_rows2 === 0) {
-								echo $no_content;
-							}
-							
-							while ($ca_r2 = $stmt_catart2->fetch(PDO::FETCH_ASSOC)) {
-								$ca_r2['catSEF'] = cat_rel($row2_id, 'seftitle');
-								printArticleDetails($ca_r2, 'snews_articles', $tab2);
-							}
-							echo '</div>';
-							$tab2++;
-						}
-						echo '</div>';
-					}
-				}
-			} catch (PDOException $e) {}
-		}
-	# PAGE
-	} elseif ($contents === 'page_view') {
-		$tab = $tab ?? 1;
-		$subquery = $subquery ?? '';
-		$filterquery = $filterquery ?? '';
-		
-		$sql = "SELECT id, title, seftitle, date, published, artorder, visible, default_page
-			FROM " . _PRE . "articles
-			WHERE position = 3 $subquery $filterquery
-			ORDER BY artorder ASC, date DESC";
-			
-		$num_rows = stats('articles', '', 'position = 3 ' . $subquery);
-		if ($num_rows === 0) {
-			echo '<p>' . htmlspecialchars(l('article_not_exist'), ENT_QUOTES, 'UTF-8') . '</p>';
-		} else {
-			try {
-				$result = $database->query($sql);
-				if ($result) {
-					foreach ($result as $r) {
-						printArticleDetails($r, 'snews_pages', $tab);
-						$tab++;
-					}
-				}
-			} catch (PDOException $e) {}
-		}
-	}
-	
-	echo html_input('hidden', 'action', 'action', 'process', '', '', '', '', '', '', '', '', '', '', '');
-	echo html_input('hidden', 'task', 'task', 'reorder', '', '', '', '', '', '', '', '', '', '', '');
-	echo '<p>';
-	echo html_input('submit', 'reorder', 'reorder', l('order_content'), '', 'button', '', '', '', '', '', '', '', '', '');
-	echo '</p></div></form>';
-}
-
-// COMMENTS - EDIT (PHP 8.1 safe: prepared selection & explicit string casting fallbacks)
-function edit_comment(): void {
-	$database = db();
-	if (!$database || !isset($_GET['commentid'])) {
-		return;
-	}
-
-	$commentid = (int)$_GET['commentid'];
-	$query = "SELECT id, articleid, name, url, comment, approved FROM " . _PRE . "comments WHERE id = :id";
-	
-	try {
-		$stmt = $database->prepare($query);
-		$stmt->execute(['id' => $commentid]);
-		$r = $stmt->fetch(PDO::FETCH_ASSOC);
-		
-		if ($r) {
-			$articleid_val = (int)$r['articleid'];
-			$articleTITLE_res = retrieve('title', 'articles', 'id', $articleid_val);
-			$articleTITLE = is_array($articleTITLE_res) ? ($articleTITLE_res['title'] ?? '') : (string)$articleTITLE_res;
-			
-			// FIX: String-casting voorkomt type errors onder PHP 8.1 mocht de waarde NULL zijn
-			$comment = stripslashes((string)$r['comment']);
-			$comment = str_replace('<br />', '', $comment);
-			
-			echo html_input('form', '', 'post', '', '', '', '', '', '', '', '', '', 'post', '?action=process&amp;task=editcomment&amp;id=' . $commentid, '');
-			echo csrf_field();
-			echo '<div class="adminpanel">';
-			echo '<p class="admintitle">' . l('edit_comment') . ' (<strong> ' . htmlspecialchars($articleTITLE, ENT_QUOTES, 'UTF-8') . '</strong> )</p>';
-			echo html_input('textarea', 'editedcomment', 'ec', $comment, l('comment'), '', '', '', '', '', '2', '100', '', '', '');
-			echo html_input('text', 'name', 'n', (string)$r['name'], l('name'), '', '', '', '', '', '', '', '', '', '');
-			echo html_input('text', 'url', 'url', (string)$r['url'], l('url'), '', '', '', '', '', '', '', '', '', '');
-			echo html_input('checkbox', 'approved', 'a', '', l('approved'), '', '', '', '', (string)$r['approved'] === 'True' ? 'ok' : '', '', '', '', '', '');
-			echo '</div><p>';
-			
-			echo html_input('hidden', 'id', 'id', (string)$articleid_val, '', '', '', '', '', '', '', '', '', '', '');
-			echo html_input('hidden', 'action', 'action', 'process', '', '', '', '', '', '', '', '', '', '', '');
-			echo html_input('hidden', 'task', 'task', 'editcomment', '', '', '', '', '', '', '', '', '', '', '');
-			echo html_input('submit', 'submit_text', 'submit_text', l('edit'), '', 'button', '', '', '', '', '', '', '', '', '') . ' ';
-			echo html_input('hidden', 'commentid', 'commentid', (string)$r['id'], '', '', '', '', '', '', '', '', '', '', '');
-			echo html_input('submit', 'delete_text', 'delete_text', l('delete'), '', 'button', 'onclick="return pop(\'' . htmlspecialchars(l('js_delete2'), ENT_QUOTES, 'UTF-8') . '\')"', '', '', '', '', '', '', '', '');
-			echo '</p></form>';
-		}
-	} catch (PDOException $e) {}
-}
-
-// ---- FILE MANAGER HELPERS ----
-// Extensions that can never be uploaded, whatever the "allowed files" setting says.
-function blocked_upload_extension(string $ext): bool
+// LANGUAGE
+function l(string $var): string
 {
-	static $blocked = ['php', 'php2', 'php3', 'php4', 'php5', 'php6', 'php7', 'php8', 'phtml', 'pht', 'phtm', 'phar', 'phps', 'pgif',
-		'shtml', 'shtm', 'cgi', 'pl', 'py', 'rb', 'sh', 'bash', 'asp', 'aspx', 'jsp', 'jspx', 'cfm', 'exe', 'dll', 'bat', 'cmd', 'com',
-		'htaccess', 'htpasswd', 'ini', 'user', 'inc'];
-	return in_array(strtolower(ltrim($ext, '.')), $blocked, true);
+    static $lang = null;
+    if ($lang === null) {
+        global $l;
+        $lang = function_exists('load_lang') ? load_lang() : [];
+
+        $lang['cat_listSEF'] = 'login,searching,verify';
+        if (_ADMIN) {
+            $lang['admin_SEF'] = 'administration,admin_category,admin_article,article_new,extra_new,page_new,snews_categories,admin_mods';
+            $lang['admin_SEF'] .= ',snews_articles,extra_contents,snews_pages,snews_settings,snews_files,logout,groupings,admin_groupings';
+            // The admin links "edit comment", "hide", "show" and the delete links use these actions.
+            // They were missing from this list, so those links ended in a 404. (All of them need a CSRF token.)
+            $lang['admin_SEF'] .= ',editcomment,process,hide,show';
+        }
+        $lang['js_inc'] = 'login,contact,article_new' . (isset($l['focus']) && !empty($l['focus']) ? $l['focus'] : '');
+        $lang['divider'] = (string)ini_value('OPTIONS', 'divider');
+        $lang['page_list'] = (string)ini_value('OPTIONS', 'page_list');
+        $lang['ignored_pages'] = (string)ini_value('OPTIONS', 'ignore_pages');
+        $lang['ignore_cats'] = (string)ini_value('OPTIONS', 'ignore_cats');
+        $lang['paginator'] = (string)ini_value('OPTIONS', 'paginator');
+        $lang['comment_pages'] = (string)ini_value('OPTIONS', 'comment_pages');
+        $lang['ignored_items'] = '.,..,cgi-bin,.htaccess,Thumbs.db,snews.php,admin.php,index.php,lib.php,style.css,admin.js,config.php';
+        $lang['ignored_items'] .= ',' . s('language') . '.php';
+
+        if (is_array($l)) {
+            foreach ($l as $key => $value) {
+                $lang[$key] = $value;
+            }
+        }
+    }
+    return $lang[$var] ?? '';
 }
 
-// A clean file name: lower case letters, digits, dot, dash and underscore only.
-function safe_upload_name(string $name): string
+// ARTICLES - FUTURE POSTING
+function update_articles(): void
 {
-	$name = strtolower(basename(str_replace('\\', '/', $name)));
-	$name = preg_replace('/[^a-z0-9._-]/', '-', $name) ?? '';
-	$name = preg_replace('/-{2,}/', '-', $name) ?? '';
-	return trim(ltrim($name, '.'), '-');
+    $database = db();
+    if (!$database) {
+        return;
+    }
+
+    $last_date = s('last_date');
+    $updatetime = !empty($last_date) ? strtotime($last_date) : time();
+    $dif_time = time() - $updatetime;
+
+    if ($dif_time > 1200 || empty($last_date)) {
+        $date = date('Y-m-d H:i:s');
+
+        if (defined('DBTYPE') && DBTYPE === 'sqlite') {
+            $query_articles = "UPDATE " . _PRE . "articles SET published = 1 WHERE published = 2 AND date <= datetime(?)";
+            $param_articles = strtotime("now");
+        } else {
+            $query_articles = "UPDATE " . _PRE . "articles SET published = 1 WHERE published = 2 AND date <= NOW()";
+            $param_articles = null;
+        }
+
+        try {
+            $stmt1 = $database->prepare($query_articles);
+            if ($param_articles !== null) {
+                $stmt1->execute([$param_articles]);
+            } else {
+                $stmt1->execute();
+            }
+
+            $stmt2 = $database->prepare("UPDATE " . _PRE . "settings SET value = :new_date WHERE name = 'last_date' AND value = :last_date");
+            $stmt2->execute(['new_date' => $date, 'last_date' => $last_date]);
+        } catch (PDOException $e) {
+            // silent
+        }
+    }
 }
 
-// "shell.php.jpg" is dangerous on some server set-ups, so every part of the name is checked.
-function upload_has_blocked_ext(string $filename): bool
+// CATEGORY CHECK
+function check_category(mixed $category): bool
 {
-	$parts = explode('.', $filename);
-	array_shift($parts);
-	foreach ($parts as $part) {
-		if (blocked_upload_extension($part)) {
-			return true;
-		}
-	}
-	return false;
+    global $routes;
+    $list = _ADMIN ? l('cat_listSEF') . ',' . l('admin_SEF') : l('cat_listSEF');
+    $main_menu = explode(',', $list);
+    return (!empty($category) && is_string($category) && (in_array($category, $main_menu, true) || isset($routes[$category])));
 }
 
-// Resolve a path and make sure it is inside the site folder. (A plain strpos() prefix test also accepts
-// a sibling folder such as /var/www/site2 when the site is /var/www/site, so compare with a separator.)
-function path_inside_base(string $path): ?string
+// ADMIN CHECK
+function check_admin(mixed $command): bool
 {
-	$base = realpath('.');
-	$real = realpath($path);
-	if ($base === false || $real === false) {
-		return null;
-	}
-	if ($real === $base || str_starts_with($real, $base . DIRECTORY_SEPARATOR)) {
-		return $real;
-	}
-	return null;
+    $list = _ADMIN ? l('admin_SEF') : '';
+    $main_menu = explode(',', $list);
+    return (!empty($command) && is_string($command) && in_array($command, $main_menu, true));
 }
 
-// Folders that hold code or private data: nothing may be uploaded into or deleted from them.
-function protected_upload_dir(string $real_dir): bool
+// GET PARENT/CHILD FROM AN id
+function cat_rel(mixed $var, string $column): string
 {
-	$base = realpath('.');
-	if ($base === false) {
-		return true;
-	}
-	$rel = trim(str_replace('\\', '/', substr($real_dir, strlen($base))), '/');
-	$first = strtolower(explode('/', $rel)[0] ?? '');
-	return in_array($first, ['addons', 'lang', 'sql', 'logs', 'backups'], true);
+    $database = db();
+    if (!$database) {
+        return '';
+    }
+
+    $parent = '';
+    $child = '';
+    $categoryid = (int)$var;
+
+    $join = "SELECT parent.$column as target_column
+		FROM " . _PRE . "categories as child
+		INNER JOIN " . _PRE . "categories as parent
+			ON parent.id = child.subcat
+		WHERE child.id = :catid";
+
+    try {
+        $stmt1 = $database->prepare($join);
+        $stmt1->execute(['catid' => $categoryid]);
+        while ($r = $stmt1->fetch(PDO::FETCH_ASSOC)) {
+            $parent = $r['target_column'] . '/';
+        }
+
+        $sub = "SELECT $column as target_column FROM " . _PRE . "categories WHERE id = :catid";
+        $stmt2 = $database->prepare($sub);
+        $stmt2->execute(['catid' => $categoryid]);
+        if ($c = $stmt2->fetch(PDO::FETCH_ASSOC)) {
+            $child = $c['target_column'];
+        }
+    } catch (PDOException $e) {
+        return '';
+    }
+
+    return $parent . $child;
 }
 
-// FILES
-function files(): void {
-	echo csrf_field();
-	$upload_file = isset($_POST['upload']) ? $_POST['upload'] : null;
-	$remote_addr = $_SERVER['REMOTE_ADDR'] ?? '';
-	
-	$ip = (isset($_POST['ip']) && $_POST['ip'] === $remote_addr) ? $_POST['ip'] : null;
-	$time = (isset($_POST['time']) && (time() - (int)$_POST['time']) > 4) ? $_POST['time'] : null;
+// CONTENTS COUNTER OR MAX
+function stats(string $table, mixed $position, string $other = '', bool $count = true): int
+{
+    $database = db();
+    if (!$database) {
+        return 0;
+    }
 
-	$ignore = explode(',', l('ignored_items'));
-	$allowed_ext = array_filter(array_map(
-		static fn($e) => strtolower(trim($e)),
-		array_merge(explode(',', (string)s('allowed_files')), explode(',', (string)s('allowed_images')))
-	), static fn($e) => $e !== '' && !blocked_upload_extension($e));
-	
-	if ($ip && $time && $upload_file && _ADMIN) {
+    $field = $count ? "count(DISTINCT id)" : "MAX(catorder)";
+    $table = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
 
-		if (!csrf_check()) {
-			die('CSRF validation failed');
-		}
-		
-		if (!empty($_FILES['imagefile']['name']) && !empty($_FILES['imagefile']['tmp_name'])) {
-			$filetemp = (string)$_FILES['imagefile']['tmp_name'];
-			$filename = safe_upload_name((string)$_FILES['imagefile']['name']);
-			$upload_error = (int)($_FILES['imagefile']['error'] ?? UPLOAD_ERR_NO_FILE);
-			
-			$ext_check = strrchr($filename, '.');
-			$file_ext = $ext_check !== false ? substr($ext_check, 1) : '';
-			
-			if ($upload_error !== UPLOAD_ERR_OK || $filename === '' || !is_uploaded_file($filetemp)
-				|| !in_array($file_ext, $allowed_ext, true) || blocked_upload_extension($file_ext)
-				|| upload_has_blocked_ext($filename) || in_array($filename, $ignore, true)) {
-				die(notification(2, l('file_error'), 'snews_files'));
-			}
+    $pos = !empty($position) ? " WHERE position = " . (int)$position : "";
+    $alternative = (empty($position) && !empty($other)) ? " WHERE " . $other : "";
+    $query = "SELECT " . $field . " as num FROM " . _PRE . $table . $pos . $alternative;
+    $numrows = 0;
 
-			// Content checks: images must really be images, and no file may contain PHP code.
-			if (in_array($file_ext, ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'], true) && @getimagesize($filetemp) === false) {
-				die(notification(2, l('file_error'), 'snews_files'));
-			}
-			$head = (string)@file_get_contents($filetemp, false, null, 0, 8192);
-			if (preg_match('/<\?(?:php|=)/i', $head)) {
-				die(notification(2, l('file_error'), 'snews_files'));
-			}
-			$filetype = class_exists('finfo') ? (string)(new finfo(FILEINFO_MIME_TYPE))->file($filetemp) : 'unknown';
-
-			$upload_dir = str_replace('\\', '/', (string)($_POST['upload_dir'] ?? '.'));
-			$targetDir = path_inside_base($upload_dir);
-			if ($targetDir === null || !is_dir($targetDir) || protected_upload_dir($targetDir)) {
-				die(notification(2, l('error_file_name'), 'snews_files'));
-			}
-
-			$target_path = $targetDir . DIRECTORY_SEPARATOR . $filename;
-
-			if (move_uploaded_file($filetemp, $target_path)) {
-				@chmod($target_path, 0644);
-				echo notification(0, '', 'snews_files');
-				$kb_size = round(($_FILES['imagefile']['size'] / 1024), 1);
-				$rel_path = ltrim(str_replace('\\', '/', substr($target_path, strlen((string)realpath('.')))), '/');
-				$rel_url = str_replace('%2F', '/', rawurlencode($rel_path));
-				echo '<p><a href="' . htmlspecialchars(_SITE . $rel_url, ENT_QUOTES, 'UTF-8') . '" title="' . htmlspecialchars($filename, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($filename, ENT_QUOTES, 'UTF-8') . '</a> [' . $kb_size . ' KB] [' . htmlspecialchars($filetype, ENT_QUOTES, 'UTF-8') . ']</p>';
-			} else {
-				die(l('file_error'));
-			}
-		} else {
-			die(notification(2, l('file_error'), 'snews_files'));
-		}
-	} else {
-		if (
-			_ADMIN &&
-			isset($_GET['task']) &&
-			$_GET['task'] === 'delete' &&
-			isset($_GET['folder']) &&
-			isset($_GET['file'])
-		) {
-			// Deleting is a state change done through a link, so it needs the CSRF token.
-			if (!csrf_check_get()) {
-				die('CSRF validation failed');
-			}
-
-			$folder = str_replace('\\', '/', (string)$_GET['folder']);
-			$file   = basename((string)$_GET['file']);
-			$ext    = strtolower(pathinfo($file, PATHINFO_EXTENSION));
-
-			$targetDir = path_inside_base($folder);
-			if ($targetDir === null || protected_upload_dir($targetDir)) {
-				die('Access denied');
-			}
-
-			// Only the file types the file manager lists may be deleted: never config.php, index.php, .htaccess, ...
-			if (in_array($file, $ignore, true) || !in_array($ext, $allowed_ext, true) || blocked_upload_extension($ext)) {
-				die('Access denied');
-			}
-
-			$fileToDelete = $targetDir . DIRECTORY_SEPARATOR . $file;
-
-			if (is_file($fileToDelete) && !is_link($fileToDelete)) {
-				unlink($fileToDelete);
-			}
-
-			echo notification(0, '', 'snews_files');
-		} else {
-			$upload_dir_post = (string)($_POST['upload_dir'] ?? '');
-			
-			echo '<div class="adminpanel">';
-			echo '<p class="admintitle">' . l('upload') . '</p>';
-			echo '<form method="post" action="' . _SITE . 'snews_files/" enctype="multipart/form-data">';
-			echo csrf_field();
-			echo '<p>' . l('uploadto') . '&nbsp;&nbsp;&nbsp;<select name="upload_dir" id="ud1">';
-			echo '<option value=".">..</option>';
-			filelist('option', ".");
-			echo '</select></p><p>' . l('uploadfrom') . '&nbsp;&nbsp;&nbsp;<input type="file" name="imagefile" /></p><p>';
-			echo html_input('hidden', 'ip', 'ip1', $remote_addr, '', '', '', '', '', '', '', '', '', '', '');
-			echo html_input('hidden', 'time', 'time1', (string)time(), '', '', '', '', '', '', '', '', '', '', '');
-			echo html_input('submit', 'upload', 'upload', l('upload'), '', 'button', '', '', '', '', '', '', '', '', '');
-			echo '</p></form></div>';
-			
-			echo '<div class="adminpanel">';
-			$dir_title = empty($upload_dir_post) ? ' root' : ' ' . str_replace('.', 'root', htmlspecialchars($upload_dir_post, ENT_QUOTES, 'UTF-8'));
-			echo '<p class="admintitle">' . l('view_files') . $dir_title . '</p>';
-			echo '<form method="post" action="' . _SITE . 'snews_files/" enctype="multipart/form-data">';
-			echo csrf_field();
-			echo '<p><select name="upload_dir" id="ud2"><option value=".">..</option>';
-			filelist('option', ".");
-			echo '</select>';
-			
-			echo html_input('hidden', 'file', 'file', '', '', '', '', '', '', '', '', '', '', '', '');
-			echo html_input('hidden', 'ip', 'ip2', $remote_addr, '', '', '', '', '', '', '', '', '', '', '');
-			echo html_input('hidden', 'time', 'time2', (string)time(), '', '', '', '', '', '', '', '', '', '', '');
-			echo html_input('submit', 'show', 'show', l('view'), '', 'button', '', '', '', '', '', '', '', '', '');
-			
-			// Only folders inside the site folder may be listed.
-			$handle = (strlen($upload_dir_post) > 2 && path_inside_base(str_replace('\\', '/', $upload_dir_post)) !== null) ? $upload_dir_post : ".";
-			echo '</p><p>';
-			filelist('list', $handle);
-			echo '</p></form></div>';
-		}
-	}
+    try {
+        if ($result = $database->query($query)) {
+            if ($r = $result->fetch(PDO::FETCH_ASSOC)) {
+                $numrows = (int)$r['num'];
+            }
+        }
+    } catch (PDOException $e) {
+        return 0;
+    }
+    return $numrows;
 }
 
-// FILELIST FUNCTION (PHP 8.1 safe: opendir en strict types check)
-function filelist(string $mode, string $path, int $depth = 0): void {
-	$ignore = explode(',', l('ignored_items'));
-	$file_types = explode(',', (string)s('allowed_files'));
-	$image_types = explode(',', (string)s('allowed_images'));
-	$types = array_merge($file_types, $image_types);
-	
-	$view_dir_post = (string)($_POST['view_dir'] ?? '');
-	
-	if (is_dir($path) && ($dh = @opendir($path))) {
-		while (false !== ($file = readdir($dh))) {
-			if ($file === '.' || $file === '..') {
-				continue;
-			}
-			$target = rtrim($path, '/') . '/' . $file;
-			if (!in_array($file, $ignore, true)) {
-				$spaces = str_repeat(l('divider') . ' ', $depth);
-				switch (true) {
-					case ($mode === 'option' && is_dir($target)):
-						$selected = $view_dir_post === $target ? ' selected="selected"' : '';
-						echo '<option value="' . htmlspecialchars($target, ENT_QUOTES, 'UTF-8') . '"' . $selected . '>' . $spaces . htmlspecialchars($file, ENT_QUOTES, 'UTF-8') . '</option>';
-						filelist('option', $target, ($depth + 1));
-						break;
-					case ($mode === 'list' && is_file($target)):
-						$ext_check = strrchr($target, '.');
-						$ext = $ext_check !== false ? substr($ext_check, 1) : '';
-						if (in_array($ext, $types, true)) {
-							echo '<a href="' . htmlspecialchars($target, ENT_QUOTES, 'UTF-8') . '" title="' . l('view') . ' ' . htmlspecialchars($file, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($file, ENT_QUOTES, 'UTF-8') . '</a> ' . l('divider') . ' ';
-							echo '<a href="' . _SITE . '?action=snews_files&amp;task=delete&amp;folder=' . urlencode($path) . '&amp;file=' . urlencode($file) . '&amp;' . csrf_query() . '" title="' . l('delete') . ' ' . htmlspecialchars($file, ENT_QUOTES, 'UTF-8') . '" onclick="return pop(\'' . htmlspecialchars(l('js_delete2'), ENT_QUOTES, 'UTF-8') . '\')"> ' . l('delete') . '</a><br />';
-						}
-						break;
-				}
-			}
-		}
-		closedir($dh);
-	}
+// NOTIFICATION
+function notification(int $error = 0, string $note = '', string $link = ''): ?string
+{
+    $title = $error === 0 ? l('operation_completed') : ($error !== 2 ? l('warning') : l('admin_error'));
+    $note_html = (empty($note)) ? '' : '<p>' . htmlspecialchars($note, ENT_QUOTES, 'UTF-8') . '</p>';
+
+    $goto = '';
+    if (!empty($link)) {
+        if ($link === 'home') {
+            $goto = '<p><a href="' . _SITE . '">' . l('backhome') . '</a></p>';
+        } else {
+            $goto = '<p><a href="' . _SITE . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '/" title="' . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '">' . l('back') . '</a></p>';
+        }
+    }
+
+    $safe_link = preg_replace('/[^A-Za-z0-9_\-\/]/', '', $link) ?? '';
+
+    if ($error === 2) {
+        $_SESSION[_SITE . 'fatal'] = ($note_html === '') ? '' : '<h3>' . $title . '</h3>' . $note_html . $goto;
+
+        if (!headers_sent()) {
+            header('Refresh: 3; url=' . _SITE . $safe_link . '/');
+        }
+        echo '<meta http-equiv="refresh" content="3; url=' . htmlspecialchars(_SITE . $safe_link . '/', ENT_QUOTES, 'UTF-8') . '">';
+        return null;
+    }
+
+    return '<h3>' . $title . '</h3>' . $note_html . $goto;
 }
 
-// CHECK IF UNIQUE (Volledig herschreven naar veilige dynamische PDO Prepared Statements!)
-function check_if_unique(string $what, mixed $text, mixed $not_id = 'x', mixed $subcat = 0): bool {
-	$database = db();
-	if (!$database) {
-		return false;
-	}
+// ---------- BIG TOP-LEVEL ROUTING BLOCK (kept as in original) ----------
+if (!empty($_GET)) {
+    if (isset($url[0]) && is_string($url[0]) && !empty($url[0])) {
+        $categorySEF = $url[0];
+        if (check_category($categorySEF)) {
+            $_catID = 0;
+        }
 
-	$text = clean($text);
-	$query = "";
-	$params = [':text' => $text];
+        if (str_contains($categorySEF, 'rss-')) {
+            if (function_exists('rss_contents')) {
+                die(rss_contents($categorySEF));
+            }
+            die('No feed addon');
+        }
 
-	switch ($what) {
-		case 'article_seftitle':
-			$query = "SELECT count(DISTINCT id) as total FROM " . _PRE . "articles WHERE seftitle = :text";
-			if (!empty($not_id) && $not_id !== 'x') {
-				$query .= " AND category = :not_id";
-				$params['not_id'] = (int)$not_id;
-			}
-			break;
-		case 'article_title':
-			$query = "SELECT count(DISTINCT id) as total FROM " . _PRE . "articles WHERE title = :text";
-			if (!empty($not_id) && $not_id !== 'x') {
-				$query .= " AND category = :not_id";
-				$params['not_id'] = (int)$not_id;
-			}
-			break;
-		case 'subcat_seftitle':
-			$query = "SELECT count(DISTINCT id) as total FROM " . _PRE . "categories WHERE seftitle = :text AND subcat = :subcat";
-			$params['subcat'] = (int)$subcat;
-			break;
-		case 'subcat_name':
-			$query = "SELECT count(DISTINCT id) as total FROM " . _PRE . "categories WHERE name = :text AND subcat = :subcat";
-			$params['subcat'] = (int)$subcat;
-			break;
-		case 'cat_seftitle_edit':
-			$query = "SELECT count(DISTINCT id) as total FROM " . _PRE . "categories WHERE seftitle = :text AND id != :not_id";
-			$params['not_id'] = (int)$not_id;
-			break;
-		case 'cat_name_edit':
-			$query = "SELECT count(DISTINCT id) as total FROM " . _PRE . "categories WHERE name = :text AND id != :not_id";
-			$params['not_id'] = (int)$not_id;
-			break;
-		case 'subcat_seftitle_edit':
-			$query = "SELECT count(DISTINCT id) as total FROM " . _PRE . "categories WHERE seftitle = :text AND subcat = :subcat AND id != :not_id";
-			$params['subcat'] = (int)$subcat;
-			$params['not_id'] = (int)$not_id;
-			break;
-		case 'subcat_name_edit':
-			$query = "SELECT count(DISTINCT id) as total FROM " . _PRE . "categories WHERE name = :text AND subcat = :subcat AND id != :not_id";
-			$params['subcat'] = (int)$subcat;
-			$params['not_id'] = (int)$not_id;
-			break;
-		case 'group_seftitle':
-			$query = "SELECT count(DISTINCT id) as total FROM " . _PRE . "extras WHERE seftitle = :text";
-			if (!empty($not_id) && $not_id !== 'x') {
-				$query .= " AND id != :not_id";
-				$params['not_id'] = (int)$not_id;
-			}
-			break;
-		case 'group_name':
-			$query = "SELECT count(DISTINCT id) as total FROM " . _PRE . "extras WHERE name = :text";
-			if (!empty($not_id) && $not_id !== 'x') {
-				$query .= " AND id != :not_id";
-				$params['not_id'] = (int)$not_id;
-			}
-			break;
-		default:
-			return false;
-	}
+        $subcatSEF = isset($url[1]) ? (string)$url[1] : '';
 
-	$rows = 0;
-	try {
-		$stmt = $database->prepare($query);
-		$stmt->execute($params);
-		if ($r = $stmt->fetch(PDO::FETCH_ASSOC)) {
-			$rows = (int)$r['total'];
-		}
-	} catch (PDOException $e) {
-		return false;
-	}
-	
-	return ($rows > 0);
-}
+        $comment_pages_prefix = l('comment_pages');
+        $prefix_len = mb_strlen($comment_pages_prefix);
 
+        if (isset($url[1]) && is_string($url[1]) && mb_strlen($url[1]) > $prefix_len && mb_substr($url[1], 0, $prefix_len) === $comment_pages_prefix && is_numeric(mb_substr($url[1], $prefix_len, 1))) {
+            $commentsPage = $url[1];
+        } else {
+            $commentsPage = isset($url[3]) ? (string)$url[3] : '';
+        }
 
-// HIDE/SHOW (PHP 8.1 safe: prepared queries, undefined index validation & modern routing headers)
-function visibility(string $mode): void {
-	$database = db();
-	if (!$database) {
-		return;
-	}
+        $articleSEF = isset($url[2]) ? (string)$url[2] : '';
 
-	if (!csrf_check_get()) {
-		die('CSRF validation failed');
-	}
+        if (_ADMIN) {
+            $pub_a = "";
+            $pub_c = "";
+            $pub_x = "";
+        } else {
+            $pub_a = " AND a.published = 1";
+            $pub_c = " AND c.published = 'YES'";
+            $pub_x = " AND x.published = 'YES'";
+        }
 
-	$get_id = isset($_GET['id']) ? (string)$_GET['id'] : '0';
-	$id = (int)cleanXSS($get_id);
-	
-	$get_item = isset($_GET['item']) ? (string)$_GET['item'] : '';
-	$item = cleanXSS($get_item);
-	
-	$back = isset($_GET['back']) ? preg_replace('/[^A-Za-z0-9_\-\/]/', '', (string)$_GET['back']) : '';
-	$no_yes = ($mode === 'hide') ? 'NO' : 'YES';
-	
-	// Initialiseer variabelen vooraf om PHP 8.1 Undefined Variable warnings te voorkomen
-	$order = 'artorder';
-	$link = !empty($back) ? $back : 'snews_articles';
+        $database = db();
+        $R = null;
+        $MainQuery = '';
+        $queryParams = [];
 
-	switch ($item) {
-		case 'snews_articles':
-			$order = 'artorder';
-			$link = empty($back) ? 'snews_articles' : $back;
-			break;
-		case 'extra_contents':
-			$order = 'artorder';
-			$link = empty($back) ? 'extra_contents' : $back;
-			break;
-		case 'snews_pages':
-			$order = 'artorder';
-			$link = empty($back) ? 'snews_pages' : $back;
-			break;
-		default:
-			// Fallback als er een onbekend item wordt meegegeven via de GET request
-			$link = !empty($back) ? $back : '';
-			break;
-	}
-	
-	$query = "UPDATE " . _PRE . "articles SET visible = :visible WHERE id = :id";
-	try {
-		$stmt = $database->prepare($query);
-		$stmt->execute([
-			':visible' => $no_yes,
-			':id'      => $id
-		]);
-	} catch (PDOException $e) {
-		// Foutopvang tijdens database runtime
-	}
-	
-	if (function_exists('notification')) {
-		echo notification(0, l('please_wait'));
-	}
-	
-	$link_destination = $link !== 'home' ? $link : '';
-	$redirect_url = _SITE . $link_destination . '/';
-	
-	// Moderne PHP header-omleiding in plaats van uitsluitend meta-refresh
-	if (!headers_sent()) {
-		header('Refresh: 1; url=' . $redirect_url);
-	}
-	echo '<meta http-equiv="refresh" content="1; url=' . htmlspecialchars($redirect_url, ENT_QUOTES, 'UTF-8') . '">';
-}
+        $paginator_prefix = l('paginator');
+        $pag_len = mb_strlen($paginator_prefix);
+        $com_len = mb_strlen($comment_pages_prefix);
 
-// *** PROCESSING (CATEGORIES, CONTENTS, COMMENTS) *** (PHP 8.1 safe: each() verwijderd, strict array verification)
-function processing(): void {
-	if (!defined('_ADMIN') || !_ADMIN) {
-		if (function_exists('notification')) {
-			echo notification(1, l('error_not_logged_in'), 'home');
-		}
-		return;
-	}
+        if (!empty($articleSEF) && !(mb_strlen($articleSEF) >= $pag_len && mb_substr($articleSEF, 0, $pag_len) === $paginator_prefix) && !(mb_strlen($articleSEF) >= $com_len && mb_substr($articleSEF, 0, $com_len) === $comment_pages_prefix)) {
+            $MainQuery = "SELECT a.id AS id, title, position, description_meta, keywords_meta,
+				c.id AS catID, c.name AS name, c.description, x.name AS xname, x.id AS subID
+				FROM " . _PRE . "articles AS a, " . _PRE . "categories AS c
+				LEFT JOIN " . _PRE . "categories AS x ON c.subcat = x.id
+				WHERE a.category = c.id $pub_a $pub_c $pub_x
+				AND x.seftitle = :categorySEF
+				AND c.seftitle = :subcatSEF
+				AND a.seftitle = :articleSEF";
 
-	$database = db();
-	if (!$database) {
-		return;
-	}
+            $queryParams = ['categorySEF' => $categorySEF, 'subcatSEF' => $subcatSEF, 'articleSEF' => $articleSEF];
+            $_TYPE = 1;
+        }
+        else if (!empty($subcatSEF) && !(mb_strlen($subcatSEF) >= $pag_len && mb_substr($subcatSEF, 0, $pag_len) === $paginator_prefix) && !(mb_strlen($subcatSEF) >= $com_len && mb_substr($subcatSEF, 0, $com_len) === $comment_pages_prefix)) {
 
-	$get_action = isset($_GET['action']) ? (string)$_GET['action'] : '';
-	$action = cleanXSS($get_action);
-	
-	$get_id = isset($_GET['id']) ? (string)$_GET['id'] : '0';
-	$id = (int)cleanXSS($get_id, true);
-	
-	$post_commentid = isset($_POST['commentid']) ? (string)$_POST['commentid'] : '0';
-	$commentid = (int)cleanXSS($post_commentid, true);
-	
-	$approved = (isset($_POST['approved']) && ($_POST['approved'] === 'on' || $_POST['approved'] === 'YES')) ? 'True' : '';
-	$name = isset($_POST['name']) ? clean(entity($_POST['name'])) : '';
-	
-	$post_def_cat = isset($_POST['define_category']) ? (string)$_POST['define_category'] : '0';
-	$category = !empty($_POST['define_category']) ? (int)cleanXSS($post_def_cat, true) : 0;
-	
-	$post_subcat = isset($_POST['subcat']) ? (string)$_POST['subcat'] : '0';
-	$subcat = isset($_POST['subcat']) ? (int)cleanXSS($post_subcat, true) : 0;
-	
-	$page = isset($_POST['define_page']) ? (string)$_POST['define_page'] : '';
-	$def_extra = isset($_POST['define_extra']) ? (string)$_POST['define_extra'] : '';
-	$description = isset($_POST['description']) ? clean(entity($_POST['description'])) : '';
-	$title = isset($_POST['title']) ? clean(entity($_POST['title'])) : '';
-	$seftitle = isset($_POST['seftitle']) ? clean((string)$_POST['seftitle']) : '';
-	$url = isset($_POST['url']) ? cleanXSS((string)$_POST['url']) : '';
-	$comment = isset($_POST['editedcomment']) ? cleanComment((string)$_POST['editedcomment']) : '';
-	
-	if (function_exists('clean_mysql')) {
-		$text = isset($_POST['text']) ? clean_mysql((string)$_POST['text']) : '';
-	} else {
-		$text = isset($_POST['text']) ? urldecode((string)$_POST['text']) : '';
-	}
-	
-	$date = date('Y-m-d H:i:s');
-	$description_meta = isset($_POST['description_meta']) ? entity($_POST['description_meta']) : '';
-	$keywords_meta = isset($_POST['keywords_meta']) ? entity($_POST['keywords_meta']) : '';
-	
-	$display_title = (isset($_POST['display_title']) && ($_POST['display_title'] === 'on' || $_POST['display_title'] === 'YES')) ? 'YES' : 'NO';
-	$display_info = (isset($_POST['display_info']) && ($_POST['display_info'] === 'on' || $_POST['display_info'] === 'YES')) ? 'YES' : 'NO';
-	$commentable = (isset($_POST['commentable']) && ($_POST['commentable'] === 'on' || $_POST['commentable'] === 'YES')) ? 'YES' : 'NO';
-	$freez = (isset($_POST['freeze']) && ($_POST['freeze'] === 'on' || $_POST['freeze'] === 'YES')) ? 'YES' : 'NO';
-	
-	if ($freez === 'YES' && $commentable === 'YES') {
-		$commentable = 'FREEZ';
-	}
-	
-	$position = (isset($_POST['position']) && (int)$_POST['position'] > 0) ? (int)$_POST['position'] : 1;
-	$publish_article = (isset($_POST['publish_article']) && ($_POST['publish_article'] === 'on' || $_POST['publish_article'] === 'YES')) ? 1 : 0;
-	$show_in_subcats = (isset($_POST['show_in_subcats']) && ($_POST['show_in_subcats'] === 'on' || $_POST['show_in_subcats'] === 'YES')) ? 'YES' : 'NO';
-	$show_on_home = ((isset($_POST['show_on_home']) && ($_POST['show_on_home'] === 'on' || $_POST['show_on_home'] === 'YES')) || $position > 1) ? 'YES' : 'NO';
-	$publish_category = (isset($_POST['publish']) && ($_POST['publish'] === 'on' || $_POST['publish'] === 'YES')) ? 'YES' : 'NO';
-	
-	$fpost_enabled = (isset($_POST['fposting']) && ($_POST['fposting'] === 'on' || $_POST['fposting'] === 'YES'));
-	if ($fpost_enabled) {
-		$f_year   = (int)($_POST['fposting_year'] ?? date('Y'));
-		$f_month  = (int)($_POST['fposting_month'] ?? date('m'));
-		$f_day    = (int)($_POST['fposting_day'] ?? date('d'));
-		$f_hour   = (int)($_POST['fposting_hour'] ?? date('H'));
-		$f_minute = (int)($_POST['fposting_minute'] ?? date('i'));
-		
-		// Veilig formattering dwingen met voorloopnullen om database parsingfouten te tackelen
-		$date = sprintf('%04d-%02d-%02d %02d:%02d:00', $f_year, $f_month, $f_day, $f_hour, $f_minute);
-		if (date('Y-m-d H:i:s') < $date) {
-			$publish_article = 2;
-		}
-	}
-	
-	$task = isset($_POST['task']) ? cleanXSS((string)$_POST['task']) : '';
-	
-	if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST)) {
+            $Try_Article = "SELECT a.id AS id, title, position, description_meta, keywords_meta,
+					c.id as catID, name, description, subcat
+				FROM " . _PRE . "articles AS a
+				LEFT JOIN " . _PRE . "categories AS c ON category = c.id
+				WHERE c.seftitle = :categorySEF
+				AND a.seftitle = :subcatSEF $pub_a $pub_c
+				AND subcat = 0";
 
-		if (!csrf_check()) {
-			die('CSRF validation failed');
-		}
+            $num = stats('articles', '', "seftitle = '" . preg_replace('/[^a-zA-Z0-9_-]/', '', $subcatSEF) . "'");
+            if ($num !== 0 && $database) {
+                try {
+                    $stmt = $database->prepare($Try_Article);
+                    $stmt->execute(['categorySEF' => $categorySEF, 'subcatSEF' => $subcatSEF]);
+                    $R = $stmt->fetch(PDO::FETCH_ASSOC);
+                } catch (PDOException $e) {
+                }
+                $_TYPE = 2;
+            } else {
+                $MainQuery = "SELECT c.id AS catID, c.name AS name, c.description, c.subcat,
+					x.name AS xname, x.id AS subID
+				FROM " . _PRE . "categories AS x
+				LEFT JOIN " . _PRE . "categories AS c ON c.subcat = x.id
+				WHERE x.seftitle = :categorySEF
+				AND c.seftitle = :subcatSEF $pub_c $pub_x";
 
-		switch ($task) {
-			case 'save_settings':
-				if (isset($_POST['save'])) {
-					$website_title = (string)($_POST['website_title'] ?? '');
-					$home_sef = (string)($_POST['home_sef'] ?? '');
-					$website_description = (string)($_POST['website_description'] ?? '');
-					$website_keywords = (string)($_POST['website_keywords'] ?? '');
-					
-					$email_input = (string)($_POST['website_email'] ?? '');
-					$website_email = filter_var($email_input, FILTER_VALIDATE_EMAIL) !== false ? $email_input : '';
-					
-					$contact_subject = (string)($_POST['contact_subject'] ?? '');
-					$language = (string)($_POST['language'] ?? 'EN');
-					$charset = (string)($_POST['charset'] ?? 'UTF-8');
-					$date_format = (string)($_POST['date_format'] ?? 'd.m.Y. H:i');
-					$article_limit = (string)($_POST['article_limit'] ?? '3');
-					$rss_limit = (string)($_POST['rss_limit'] ?? '5');
-					$display_page = (string)($_POST['display_page'] ?? '0');
-					
-					$display_new_on_home = (string)($_POST['display_new_on_home'] ?? '');
-					$display_pagination = (string)($_POST['display_pagination'] ?? '');
-					$num_categories = (string)($_POST['num_categories'] ?? '');
-					$show_cat_names = !empty($_POST['show_cat_names']) ? (string)$_POST['show_cat_names'] : '';
-					$approve_comments = (string)($_POST['approve_comments'] ?? '');
-					$mail_on_comments = (string)($_POST['mail_on_comments'] ?? '');
-					$comments_order = (string)($_POST['comments_order'] ?? 'ASC');
-					$comment_limit = (string)($_POST['comment_limit'] ?? '30');
-					
-					$word_filter_enable = (string)($_POST['word_filter_enable'] ?? '');
-					$word_filter_file = (string)($_POST['word_filter_file'] ?? '');
-					$word_filter_change = (string)($_POST['word_filter_change'] ?? '');
-					
-					$enable_extras = (isset($_POST['enable_extras']) && ($_POST['enable_extras'] === 'on' || $_POST['enable_extras'] === 'YES')) ? 'YES' : 'NO';
-					$enable_comments = (isset($_POST['enable_comments']) && ($_POST['enable_comments'] === 'on' || $_POST['enable_comments'] === 'YES')) ? 'YES' : 'NO';
-					
-					$comment_repost_timer = (isset($_POST['comment_repost_timer']) && is_numeric($_POST['comment_repost_timer'])) ? (int)$_POST['comment_repost_timer'] : 15;
-					$freeze_comments = (isset($_POST['freeze_comments']) && ($_POST['freeze_comments'] === 'on' || $_POST['freeze_comments'] === 'YES')) ? 'YES' : 'NO';
-					
-					$file_ext = (string)($_POST['file_ext'] ?? '');
-					$allowed_file = (string)($_POST['allowed_file'] ?? '');
-					$allowed_img = (string)($_POST['allowed_img'] ?? '');
+                $queryParams = ['categorySEF' => $categorySEF, 'subcatSEF' => $subcatSEF];
+                $_TYPE = 3;
+            }
+        }
+        else if (!check_category($categorySEF)) {
+            if (mb_strlen($categorySEF) >= $pag_len && mb_substr($categorySEF, 0, $pag_len) === $paginator_prefix) {
+                $MainQuery = '';
+                $_TYPE = 4;
+            } else {
+                $Try_Page = "SELECT id, title, category, description_meta, keywords_meta, position
+					FROM " . _PRE . "articles AS a
+					WHERE seftitle = :categorySEF $pub_a AND position = 3";
 
-					// ---- Validate the values before they are stored (they drive file paths, uploads and SQL limits) ----
-					// Language: must be an existing file in lang/ (it is included with require).
-					if (!preg_match('/^[A-Za-z0-9_-]{1,20}$/', $language) || !is_file('lang/' . $language . '.php')) {
-						$language = (string)s('language') !== '' ? (string)s('language') : 'EN';
-					}
-					$charset = preg_match('/^[A-Za-z0-9_-]{2,20}$/', $charset) ? $charset : 'UTF-8';
-					$date_format = preg_match('/^[A-Za-z0-9 .,:\/\-_\\\\]{0,40}$/', $date_format) ? $date_format : 'd.m.Y. H:i';
-					$article_limit = (string)max(1, min(100, (int)$article_limit));
-					$rss_limit = (string)max(1, min(100, (int)$rss_limit));
-					$display_page = (string)max(0, (int)$display_page);
-					$comment_limit = (string)max(1, min(500, (int)$comment_limit));
-					$comments_order = strtoupper($comments_order) === 'DESC' ? 'DESC' : 'ASC';
-					$onoff = static fn(string $v): string => $v === 'on' ? 'on' : '';
-					$display_new_on_home = $onoff($display_new_on_home);
-					$display_pagination = $onoff($display_pagination);
-					$num_categories = $onoff($num_categories);
-					$show_cat_names = $onoff($show_cat_names);
-					$approve_comments = $onoff($approve_comments);
-					$mail_on_comments = $onoff($mail_on_comments);
-					$word_filter_enable = $onoff($word_filter_enable);
-					// Word filter file: a relative path inside the site folder only.
-					if ($word_filter_file !== '' && (!preg_match('#^[A-Za-z0-9_./-]{1,100}$#', $word_filter_file)
-						|| str_contains($word_filter_file, '..') || $word_filter_file[0] === '/')) {
-						$word_filter_file = '';
-					}
-					// File type lists: plain extensions only, and never a server-side script type.
-					$clean_ext_list = static function (string $list): string {
-						$out = [];
-						foreach (explode(',', $list) as $e) {
-							$e = strtolower(trim($e));
-							if ($e === '' || !preg_match('/^[a-z0-9]{1,10}$/', $e) || blocked_upload_extension($e)) {
-								continue;
-							}
-							$out[$e] = $e;
-						}
-						return implode(',', $out);
-					};
-					$file_ext = $clean_ext_list($file_ext);
-					$allowed_file = $clean_ext_list($allowed_file);
-					$allowed_img = $clean_ext_list($allowed_img);
+                if ($database) {
+                    try {
+                        $stmt = $database->prepare($Try_Page);
+                        $stmt->execute(['categorySEF' => $categorySEF]);
+                        $R = $stmt->fetch(PDO::FETCH_ASSOC);
+                    } catch (PDOException $e) {
+                    }
+                    $_TYPE = 5;
+                }
 
-					$ufield = array(
-						'website_title'        => $website_title,
-						'home_sef'             => $home_sef,
-						'website_description'  => $website_description,
-						'website_keywords'     => $website_keywords,
-						'website_email'        => $website_email,
-						'contact_subject'      => $contact_subject,
-						'language'             => $language,
-						'charset'              => $charset,
-						'date_format'          => $date_format,
-						'article_limit'        => $article_limit,
-						'rss_limit'            => $rss_limit,
-						'display_page'         => $display_page,
-						'comments_order'       => $comments_order,
-						'comment_limit'        => $comment_limit,
-						'word_filter_file'     => $word_filter_file,
-						'word_filter_change'   => $word_filter_change,
-						'display_new_on_home'  => $display_new_on_home,
-						'display_pagination'   => $display_pagination,
-						'num_categories'       => $num_categories,
-						'show_cat_names'       => $show_cat_names,
-						'approve_comments'     => $approve_comments,
-						'mail_on_comments'     => $mail_on_comments,
-						'word_filter_enable'   => $word_filter_enable,
-						'enable_extras'        => $enable_extras,
-						'enable_comments'      => $enable_comments,
-						'freeze_comments'      => $freeze_comments,
-						'comment_repost_timer' => (string)$comment_repost_timer,
-						'file_extensions'      => $file_ext,
-						'allowed_files'        => $allowed_file,
-						'allowed_images'       => $allowed_img
-					);
-					
-					// FIX: De brekende list() = each() lus vervangen door een up-to-date foreach-constructie
-					// A setting that has no row yet (for example enable_comments on an older database) is created,
-					// otherwise the UPDATE would silently do nothing and the option could never be saved.
-					$sql = "UPDATE " . _PRE . "settings SET value = :val WHERE name = :name";
-					try {
-						$stmt = $database->prepare($sql);
-						$exists = $database->prepare("SELECT COUNT(*) FROM " . _PRE . "settings WHERE name = :name");
-						$insert = $database->prepare("INSERT INTO " . _PRE . "settings (name, value) VALUES (:name, :val)");
-						foreach ($ufield as $key => $value) {
-							$exists->execute([':name' => $key]);
-							if ((int)$exists->fetchColumn() === 0) {
-								$insert->execute([':name' => $key, ':val' => $value]);
-							} else {
-								$stmt->execute([
-									':val'  => $value,
-									':name' => $key
-								]);
-							}
-						}
-					} catch (PDOException $e) {
-						// database error tijdens opslaan settings
-					}
-					
-					if (function_exists('notification')) {
-						echo notification(0, '', 'snews_settings');
-					}
-				}
-				break;
-
-				
-						case 'changeup':
-					if (isset($_POST['submit_pass'])) {
-						$user = checkUserPass($_POST['uname'] ?? '');
-						$pass1 = checkPassword($_POST['pass1'] ?? '', true);
-						$pass2 = checkPassword($_POST['pass2'] ?? '', true);
-
-						// The current password must be confirmed (protects a left-open admin session).
-						$current_raw = isset($_POST['pass_current']) && is_string($_POST['pass_current']) ? $_POST['pass_current'] : '';
-						$current_legacy = checkUserPass($current_raw);
-						$stored_hash = (string)s('password');
-						$current_ok = $current_raw !== '' && (
-							password_verify($current_raw, $stored_hash)
-							|| ($current_legacy !== null && password_verify($current_legacy, $stored_hash))
-						);
-
-						if ($user && $pass1 && $pass2 && $pass1 === $pass2 && $pass1 !== $user && $current_ok) {
-							$uname = $user;
-							$pass = password_hash($pass2, PASSWORD_DEFAULT);
-							
-							# USERNAME UPDATE via zuivere PDO execute
-							$q1 = "UPDATE " . _PRE . "settings SET value = :val WHERE name = :name";
-							try {
-								$stmt1 = $database->prepare($q1);
-								$stmt1->execute([
-									':val'  => $uname,
-									':name' => 'username'
-								]);
-							} catch (PDOException $e) {}
-							
-							# PASSWORD UPDATE via zuivere PDO execute
-							$q2 = "UPDATE " . _PRE . "settings SET value = :val WHERE name = :name";
-							try {
-								$stmt2 = $database->prepare($q2);
-								$stmt2->execute([
-									':val'  => $pass,
-									':name' => 'password'
-								]);
-							} catch (PDOException $e) {}
-
-							// New credentials: start a fresh session id and CSRF token.
-							session_regenerate_id(true);
-							$_SESSION[_SITE . 'Logged_In'] = token();
-							$_SESSION[_SITE . 'last_active'] = time();
-							unset($_SESSION['csrf_token']);
-
-							echo notification(0, '', 'administration');
-						} else {
-							// FIX: Voorkom een harde script-crash via die(), gebruik return
-							echo notification(2, l('pass_mismatch'), 'snews_settings');
-							return;
-						}
-					}
-					break;
-
-				case 'admin_groupings':
-					// Strikte typecasting initialisatie voor veilig gebruik in de geneste switch
-					$name = (string)($name ?? '');
-					$seftitle = (string)($seftitle ?? '');
-					$description = (string)($description ?? '');
-					$id = (int)($id ?? 0);
-
-					switch (true) {
-						case (empty($name)):
-							echo notification(1, l('err_TitleEmpty') . l('errNote'));
-							form_groupings();
-							break;
-						case (empty($seftitle)):
-							echo notification(1, l('err_SEFEmpty') . l('errNote'));
-							form_groupings();
-							break;
-						case (check_if_unique('group_name', $name, $id, '')):
-							echo notification(1, l('err_TitleExists') . l('errNote'));
-							form_groupings();
-							break;
-						case (check_if_unique('group_seftitle', $seftitle, $id, '')):
-							echo notification(1, l('err_SEFExists') . l('errNote'));
-							form_groupings();
-							break;
-						case (cleancheckSEF($seftitle) === 'notok'):
-							echo notification(1, l('err_SEFIllegal') . l('errNote'));
-							form_groupings();
-							break;
-						default:
-							switch (true) {
-								case (isset($_POST['add_groupings'])):
-									$sql1 = "INSERT INTO " . _PRE . "extras (name, seftitle, description) VALUES (:name, :sef, :desc)";
-									try {
-										$stmt = $database->prepare($sql1);
-										$stmt->execute([
-											':name' => $name,
-											':sef'  => $seftitle,
-											':desc' => $description
-										]);
-									} catch (PDOException $e) {}
-									break;
-								case (isset($_POST['edit_groupings'])):
-									$sql2 = "UPDATE " . _PRE . "extras SET name = :name, seftitle = :sef, description = :desc WHERE id = :id";
-									try {
-										$stmt = $database->prepare($sql2);
-										$stmt->execute([
-											':name' => $name,
-											':sef'  => $seftitle,
-											':desc' => $description,
-											':id'   => $id
-										]);
-									} catch (PDOException $e) {}
-									break;
-								case (isset($_POST['delete_groupings'])):
-									$sql3 = "DELETE FROM " . _PRE . "extras WHERE id = :id";
-									try {
-										$stmt = $database->prepare($sql3);
-										$stmt->execute([
-											':id' => $id
-										]);
-									} catch (PDOException $e) {}
-									break;
-							}
-							echo notification(0, '', 'groupings');
-					}
-					break;
-
-				case 'admin_category':
-				case 'admin_subcategory':
-					$name = (string)($name ?? '');
-					$seftitle = (string)($seftitle ?? '');
-					$description = (string)($description ?? '');
-					$id = (int)($id ?? 0);
-					$subcat = (int)($subcat ?? 0);
-					$publish_category = (string)($publish_category ?? 'YES');
-
-					switch (true) {
-						case (empty($name)):
-							echo notification(1, l('err_TitleEmpty') . l('errNote'));
-							form_categories();
-							break;
-						case (empty($seftitle)):
-							echo notification(1, l('err_SEFEmpty') . l('errNote'));
-							form_categories();
-							break;
-						case (isset($_POST['add_category']) && check_if_unique('subcat_name', $name, '', $subcat)):
-							echo notification(1, l('err_TitleExists') . l('errNote'));
-							form_categories();
-							break;
-						case (isset($_POST['add_category']) && check_if_unique('subcat_seftitle', $seftitle, '', $subcat)):
-							echo notification(1, l('err_SEFExists') . l('errNote'));
-							form_categories();
-							break;
-						case (isset($_POST['edit_category']) && $subcat === 0 && check_if_unique('cat_name_edit', $name, $id, '')):
-							echo notification(1, l('err_TitleExists') . l('errNote'));
-							form_categories();
-							break;
-						case (isset($_POST['edit_category']) && $subcat === 0 && check_if_unique('cat_seftitle_edit', $seftitle, $id, '')):
-							echo notification(1, l('err_SEFExists') . l('errNote'));
-							form_categories();
-							break;
-						case (isset($_POST['edit_category']) && $subcat !== 0 && check_if_unique('subcat_name_edit', $name, $id, $subcat)):
-							echo notification(1, l('err_TitleExists') . l('errNote'));
-							form_categories();
-							break;
-						case (isset($_POST['edit_category']) && $subcat !== 0 && check_if_unique('subcat_seftitle_edit', $seftitle, $id, $subcat)):
-							echo notification(1, l('err_SEFExists') . l('errNote'));
-							form_categories();
-							break;
-						case (cleancheckSEF($seftitle) === 'notok'):
-							echo notification(1, l('err_SEFIllegal') . l('errNote'));
-							form_categories();
-							break;
-						case ($subcat === $id && $id !== 0):
-							echo ' ' . $id;
-							echo notification(1, l('errNote'));
-							form_categories();
-							break;
-						default:
-							switch(true) {
-								case(isset($_POST['add_category'])):
-									$catorder = stats('categories', '', 'subcat = ' . $subcat, false);
-									$catorder = $catorder + 1;
-									$query = "INSERT INTO " . _PRE . "categories (name, seftitle, description, published, catorder, subcat) 
-										VALUES (:name, :sef, :desc, :published, :catorder, :subcat)";
-									try {
-										$stmt = $database->prepare($query);
-										$stmt->execute([
-											':name'       => $name,
-											':sef'        => $seftitle,
-											':desc'       => $description,
-											':published'  => $publish_category,
-											':catorder'   => $catorder,
-											':subcat'     => $subcat
-										]);
-									} catch (PDOException $e) {}
-									break;
-
-																# EDIT CATEGORY (PHP 8.1 safe execution loop)
-								case (isset($_POST['edit_category'])):
-									$catorder = stats('categories', '', 'subcat = ' . (int)$subcat, false);
-									$catorder = isset($_POST['catorder']) ? (int)$_POST['catorder'] : $catorder + 1;
-									
-									$query = "UPDATE " . _PRE . "categories
-										SET name = :name, seftitle = :sef, description = :desc, published = :pub, subcat = :subcat, catorder = :cat_order
-										WHERE id = :id";
-									try {
-										$stmt = $database->prepare($query);
-										$stmt->execute([
-											':name'      => $name,
-											':sef'       => $seftitle,
-											':desc'      => $description,
-											':pub'       => $publish_category,
-											':subcat'    => (int)$subcat,
-											':cat_order' => (int)$catorder,
-											':id'        => (int)$id
-										]);
-									} catch (PDOException $e) {}
-									break;
-
-								# DELETE CATEGORY
-								case (isset($_POST['delete_category'])):
-									$any_subcats = stats('categories', '', 'subcat = ' . (int)$id);
-									$any_articles = stats('articles', '', 'category = ' . (int)$id);
-									if ($any_subcats > 0 || $any_articles > 0) {
-										echo notification(1, l('warn_catnotempty'), '');
-										echo '<p><a href="' . _SITE . 'administration/" title="' . htmlspecialchars(l('administration'), ENT_QUOTES, 'UTF-8') . '">' . l('administration') . '</a>  OR  ';
-										echo '<a href="' . _SITE . '?action=process&amp;task=delete_category_all&amp;id=' . (int)$id . '&amp;' . csrf_query() . '" ';
-										echo 'onclick="return pop(\'' . htmlspecialchars(l('js_delete1'), ENT_QUOTES, 'UTF-8') . '\')" title="' . htmlspecialchars(l('administration'), ENT_QUOTES, 'UTF-8') . '">';
-										echo htmlspecialchars(l('empty_cat'), ENT_QUOTES, 'UTF-8') . '</a></p>';
-										$no_success = true;
-									} else {
-										if (function_exists('delete_cat')) {
-											delete_cat($id);
-										}
-									}
-									break;
-							}
-						$success = isset($no_success) ? '' : notification(0, '', 'snews_categories');
-						echo $success;
-					}
-					break;
-
-				case 'reorder':
-					if (isset($_POST['reorder']) && isset($_POST['order'])) {
-						$table = 'articles';
-						$order_type = 'artorder';
-						$remove = 'page_';
-						
-						switch ($_POST['order']){
-							case 'snews_articles':
-							case 'extra_contents':
-							case 'snews_pages':
-								$table = 'articles';
-								$order_type = 'artorder';
-								$remove = 'page_';
-								break;
-							case 'snews_categories':
-								$table = 'categories';
-								$order_type = 'catorder';
-								$remove = 'cat_';
-								break;
-						}
-						
-						// FIX: Whitelist de database kolommen en tabelnamen tegen SQL injectie
-						$table = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
-						$order_type = preg_replace('/[^a-zA-Z0-9_]/', '', $order_type);
-						
-						$query = "UPDATE " . _PRE . $table . " SET $order_type = :type WHERE id = :id";
-						try {
-							$stmt = $database->prepare($query);
-							foreach ($_POST as $key => $value) {
-								$type_id = (int)str_replace($remove, '', $key);
-								$clean_val = (int)trim((string)$value);
-								
-								if ($key !== 'reorder' && $key !== 'order' && $key !== $table && $key !== l('order_content') && $key !== $_POST['order']) {
-									$stmt->execute([
-										':type' => $clean_val,
-										':id'   => $type_id
-									]);
-								}
-							}
-						} catch (PDOException $e) {}
-						
-						if (function_exists('notification')) {
-							echo notification(0, l('please_wait'));
-						}
-						
-						$redirect_url = _SITE . (string)$_POST['order'] . '/';
-						if (!headers_sent()) {
-							header('Refresh: 1; url=' . $redirect_url);
-						}
-						echo '<meta http-equiv="refresh" content="1; url=' . htmlspecialchars($redirect_url, ENT_QUOTES, 'UTF-8') . '">';
-					}
-					break;
-
-				case 'admin_article':
-					$_SESSION[_SITE . 'temp']['title'] = $_POST['title'] ?? '';
-					$_SESSION[_SITE . 'temp']['seftitle'] = $_POST['seftitle'] ?? '';
-					$_SESSION[_SITE . 'temp']['text'] = $_POST['text'] ?? '';
-					
-					$position = (int)($position ?? 1);
-					$from = '';
-					$link = 'snews_articles';
-					
-					switch ($position) {
-						case 1: $from = $id !== 0 ? '' : 'article_new'; $link = 'snews_articles'; break;
-						case 2: $from = $id !== 0 ? '' : 'extra_new';   $link = 'extra_contents'; break;
-						case 3: $from = $id !== 0 ? '' : 'page_new';    $link = 'snews_pages'; break;
-					}
-					
-					$title = (string)($title ?? '');
-					$seftitle = (string)($seftitle ?? '');
-					$category = (int)($category ?? 0);
-					
-					switch (true) {
-						case (empty($title)):
-							echo notification(1, l('err_TitleEmpty') . l('errNote'), $link);
-							form_articles($from);
-							unset($_SESSION[_SITE . 'temp']);
-							break;
-						case (empty($seftitle)):
-							echo notification(1, l('err_SEFEmpty') . l('errNote'));
-							$_SESSION[_SITE . 'temp']['seftitle'] = $_SESSION[_SITE . 'temp']['title'];
-							form_articles($from);
-							unset($_SESSION[_SITE . 'temp']);
-							break;
-						case (cleancheckSEF($seftitle) === 'notok'):
-							echo notification(1, l('err_SEFIllegal') . l('errNote'));
-							form_articles($from);
-							unset($_SESSION[_SITE . 'temp']);
-							break;
-						case ($position === 1 && isset($_POST['article_category']) && (int)$_POST['article_category'] !== $category && isset($_POST['edit_article'])
-								&& check_if_unique('article_title', $title, $category, '')):
-							echo notification(1, l('err_TitleExists') . l('errNote'));
-							form_articles($from);
-							unset($_SESSION[_SITE . 'temp']);
-							break;
-						case ($position === 1 && isset($_POST['article_category']) && (int)$_POST['article_category'] !== $category && isset($_POST['edit_article'])
-								&& check_if_unique('article_seftitle', $seftitle, $category, '')):
-							echo notification(1, l('err_SEFExists') . l('errNote'));
-							form_articles($from);
-							unset($_SESSION[_SITE . 'temp']);
-							break;
-						case (!isset($_POST['delete_article']) && !isset($_POST['edit_article'])
-								&& check_if_unique('article_title', $title, $category, '')):
-							echo notification(1, l('err_TitleExists') . l('errNote'));
-							form_articles($from);
-							unset($_SESSION[_SITE . 'temp']);
-							break;
-						case (!isset($_POST['delete_article']) && !isset($_POST['edit_article'])
-								&& check_if_unique('article_seftitle', $seftitle, $category, '')):
-							echo notification(1, l('err_SEFExists') . l('errNote'));
-							form_articles($from);
-							unset($_SESSION[_SITE . 'temp']);
-							break;
-						default:
-							$artorder = (isset($_POST['artorder']) && (int)$_POST['artorder'] > 0) ?
-								(int)$_POST['artorder'] :
-								stats('articles', '', ' category = ' . $category . ' AND position = ' . $position) + 1;
-								
-							switch (true) {
-								case (isset($_POST['add_article'])):
-									$query = "INSERT INTO " . _PRE . "articles (
-										title, seftitle, text, date, category,
-										position, extraid, page_extra, displaytitle,
-										displayinfo, commentable, published, description_meta,
-										keywords_meta, show_on_home, show_in_subcats, artorder)
-									VALUES (:title, :sef, :text, :date, :cat,
-										:pos, :extraid, :page_extra, :disp_title,
-										:disp_info, :comment, :pub, :dmeta,
-										:keywords, :shome, :ssub, :order)";
-									try {
-										$stmt = $database->prepare($query);
-										$stmt->execute([
-											':title'       => $title,
-											':sef'         => $seftitle,
-											':text'        => $text ?? '',
-											':date'        => $date,
-											':cat'         => $category,
-											':pos'         => $position,
-											':extraid'     => $def_extra ?? '',
-											':page_extra'  => $page ?? '',
-											':disp_title'  => $display_title ?? 'YES',
-											':disp_info'   => $display_info ?? 'YES',
-											':comment'     => $commentable ?? 'YES',
-											':pub'         => (int)($publish_article ?? 1),
-											':dmeta'       => $description_meta ?? '',
-											':keywords'    => $keywords_meta ?? '',
-											':shome'       => $show_on_home ?? 'YES',
-											':ssub'        => $show_in_subcats ?? 'NO',
-											':order'       => (int)$artorder
-										]);
-									} catch (PDOException $e) {}
-									break;
-
-																# EDIT ARTICLE (PHP 8.1 safe database processing)
-								case (isset($_POST['edit_article'])):
-									$database = db();
-									if (!$database) {
-										return;
-									}
-
-									// Forceer strikte typering op de positie- en ID-variabelen
-									$position = (int)($position ?? 1);
-									$id = (int)($id ?? 0);
-									$category = ($position === 3) ? 0 : (int)($category ?? 0);
-									
-									$old_pos_res = retrieve('position', 'articles', 'id', $id);
-									$old_pos = (int)(is_array($old_pos_res) ? ($old_pos_res['position'] ?? 1) : $old_pos_res);
-									
-									// Alleen uitvoeren als een pagina wordt gewijzigd naar een artikel of extra content blok
-									if ($position !== $old_pos && $old_pos === 3) {
-										// FIX: Gecorrigeerd naar Prepared Statement om de rauwe $id variabele te elimineren
-										$chk_extra_query = "SELECT id FROM " . _PRE . "articles WHERE position = 2 AND category = -3 AND page_extra = :page_id";
-										try {
-											$stmt_chk = $database->prepare($chk_extra_query);
-											$stmt_chk->execute(['page_id' => $id]);
-											
-											$sql_update_extra = "UPDATE " . _PRE . "articles SET category = :cat, page_extra = :pg_extra WHERE id = :xtra_id";
-											$stmt_up_extra = $database->prepare($sql_update_extra);
-											
-											while ($xtra = $stmt_chk->fetch(PDO::FETCH_ASSOC)) {
-												$xtra_id = (int)$xtra['id'];
-												// FIX: Uitgevoerd via execute() zonder loze, brekende dbfetch() call
-												$stmt_up_extra->execute([
-													':cat'      => '-1',
-													':pg_extra' => '',
-													':xtra_id'  => $xtra_id
-												]);
-											}
-										} catch (PDOException $e) {}
-									}
-									
-									# CHANGE TO -> ARTICLE / PAGE
-									if ($position === 1 || $position === 3) {
-										$def_extra = '';
-										$page = '';
-									}
-									# CHANGE TO -> EXTRA
-									if ($position === 2) {
-										$def_extra = empty($def_extra) ? '1' : (string)$def_extra;
-										$page = empty($page) ? '0' : (string)$page;
-									}
-									
-									// Bereid de parameters voor de hoofd-update query voor
-									$params_art = [
-										':title'       => (string)($title ?? ''),
-										':sef'         => (string)($seftitle ?? ''),
-										':text'        => (string)($text ?? ''),
-										':cat'         => $category,
-										':pos'         => $position,
-										':extraid'     => (string)$def_extra,
-										':page_extra'  => (string)$page,
-										':disp_title'  => (string)($display_title ?? 'YES'),
-										':disp_info'   => (string)($display_info ?? 'YES'),
-										':comment'     => (string)($commentable ?? 'YES'),
-										':pub'         => (int)($publish_article ?? 1),
-										':dmeta'       => (string)($description_meta ?? ''),
-										':keyw'        => (string)($keywords_meta ?? ''),
-										':shome'       => (string)($show_on_home ?? 'YES'),
-										':ssubcat'     => (string)($show_in_subcats ?? 'NO'),
-										':order'       => (int)($artorder ?? 0),
-										':id'          => $id
-									];
-
-									// FIX: In plaats van rauwe SQL string concatenatie ($future), houden we de query statisch
-									if (isset($fpost_enabled) && $fpost_enabled) {
-										$publish_article = strtotime((string)$date) < time() ? 1 : (int)($publish_article ?? 1);
-										$params_art[':pub'] = $publish_article;
-										$params_art[':date_val'] = (string)$date;
-										
-										$art_qwr = "UPDATE " . _PRE . "articles SET
-											title = :title, seftitle = :sef, text = :text, date = :date_val, category = :cat, position = :pos,
-											extraid = :extraid, page_extra = :page_extra, displaytitle = :disp_title, displayinfo = :disp_info,
-											commentable = :comment, published = :pub, description_meta = :dmeta, keywords_meta = :keyw, show_on_home = :shome,
-											show_in_subcats = :ssubcat, artorder = :order
-											WHERE id = :id";
-									} else {
-										$art_qwr = "UPDATE " . _PRE . "articles SET
-											title = :title, seftitle = :sef, text = :text, category = :cat, position = :pos,
-											extraid = :extraid, page_extra = :page_extra, displaytitle = :disp_title, displayinfo = :disp_info,
-											commentable = :comment, published = :pub, description_meta = :dmeta, keywords_meta = :keyw, show_on_home = :shome,
-											show_in_subcats = :ssubcat, artorder = :order
-											WHERE id = :id";
-									}
-									
-									try {
-										$res_art = $database->prepare($art_qwr);
-										// FIX: Uitgevoerd via execute() zonder loze, brekende dbfetch() call
-										$res_art->execute($params_art);
-									} catch (PDOException $e) {}
-									break;
-
-																# DELETE ARTICLE (PHP 8.1 safe prepared statements)
-								case (isset($_POST['delete_article'])):
-									$position = (int)($position ?? 1);
-									$id = (int)($id ?? 0);
-									
-									if ($position === 3) {
-										// FIX: Prepared statement om de rauwe $id variabele te elimineren
-										$chk_extra_query = "SELECT id FROM " . _PRE . "articles WHERE position = 2 AND category = -3 AND page_extra = :page_id";
-										try {
-											$stmt_chk = $database->prepare($chk_extra_query);
-											$stmt_chk->execute(['page_id' => $id]);
-											
-											$extra2 = "UPDATE " . _PRE . "articles SET category = :cat, page_extra = :extra_id WHERE id = :id";
-											$stmt_up_xtra = $database->prepare($extra2);
-											
-											while ($xtra = $stmt_chk->fetch(PDO::FETCH_ASSOC)) {
-												$xtra_id = (int)$xtra['id'];
-												// FIX: Uitgevoerd via execute() zonder loze, brekende dbfetch() call
-												$stmt_up_xtra->execute([
-													':cat'      => '0',
-													':extra_id' => '',
-													':id'       => $xtra_id
-												]);
-											}
-										} catch (PDOException $e) {}
-									}
-									
-									if (function_exists('delete_item')) {
-										delete_item('articles', 'id', $id);
-										delete_item('comments', 'articleid', $id);
-									}
-									
-									if ($id === (int)s('display_page')) {
-										// FIX: SQL-syntax gecorrigeerd van VALUE naar value
-										$qwr1 = "UPDATE " . _PRE . "settings SET value = :val WHERE name = :name";
-										try {
-											$stmt_sett = $database->prepare($qwr1);
-											$stmt_sett->execute([
-												':val'  => '0',
-												':name' => 'display_page'
-											]);
-										} catch (PDOException $e) {}
-									}
-									break;
-							}
-						
-						$link = (string)($link ?? 'snews_articles');
-						echo notification(0, '', $link);
-						unset($_SESSION[_SITE . 'temp']);
-					}
-					break;
-
-				case 'editcomment':
-					$commentid = (int)($commentid ?? 0);
-					$name = (string)($name ?? '');
-					$url = trim((string)($url ?? ''));
-					if ($url !== '') {
-						if (stripos($url, 'www.') === 0) {
-							$url = 'http://' . $url;
-						}
-						$url_scheme = strtolower((string)parse_url($url, PHP_URL_SCHEME));
-						if (filter_var($url, FILTER_VALIDATE_URL) === false || !in_array($url_scheme, ['http', 'https'], true) || strlen($url) > 100) {
-							$url = '';
-						}
-					}
-					$comment = (string)($comment ?? '');
-					$approved = (string)($approved ?? '');
-
-					// FIX: Veilig controleren van de database resultaten via retrieve() om PHP 8.1 type errors te voorkomen
-					$articleID_res = retrieve('articleid', 'comments', 'id', $commentid);
-					$articleID = (int)(is_array($articleID_res) ? ($articleID_res['articleid'] ?? 0) : $articleID_res);
-					
-					$articleSEF_res = retrieve('seftitle', 'articles', 'id', $articleID);
-					$articleSEF = (string)(is_array($articleSEF_res) ? ($articleSEF_res['seftitle'] ?? '') : $articleSEF_res);
-					
-					$articleCAT_res = retrieve('category', 'articles', 'seftitle', $articleSEF);
-					$articleCAT = (int)(is_array($articleCAT_res) ? ($articleCAT_res['category'] ?? 0) : $articleCAT_res);
-					
-					$postCat = function_exists('cat_rel') ? cat_rel($articleCAT, 'seftitle') : '';
-					$link = (!empty($postCat) ? $postCat . '/' : '') . $articleSEF;
-					
-					if (isset($_POST['submit_text'])) {
-						$q2 = "UPDATE " . _PRE . "comments SET name = :name, url = :url, comment = :comment, approved = :approved WHERE id = :id";
-						try {
-							$stmt_comm = $database->prepare($q2);
-							// FIX: Uitgevoerd via execute() zonder loze, brekende dbfetch() call
-							$stmt_comm->execute([
-								':name'     => $name,
-								':url'      => $url,
-								':comment'  => $comment,
-								':approved' => $approved,
-								':id'       => $commentid
-							]);
-						} catch (PDOException $e) {}
-					} elseif (isset($_POST['delete_text'])) {
-						if (function_exists('delete_item')) {
-							delete_item('comments', 'id', $commentid);
-						}
-					}
-					echo notification(0, '', $link);
-					break;
-			}
-		} elseif (!empty($_GET) && isset($action) && $action === 'process') {
-			if (!csrf_check_get()) {
-				die('CSRF validation failed');
-			}
-			$get_task = isset($_GET['task']) ? (string)$_GET['task'] : '';
-			$task = cleanXSS($get_task);
-			switch ($task) {
-
-								# DELETE CATEGORY AND ALL ARTICLES (PHP 8.1 safe: prepared queries & array initialization)
-				case 'delete_category_all':
-					$get_id = isset($_GET['id']) ? (string)$_GET['id'] : '0';
-					$id = (int)cleanXSS($get_id);
-					if ($id === 0) {
-						return;
-					}
-					
-					$list = []; // FIX: Voorkom undefined variable waarschuwingen
-					
-					// FIX: Herschreven naar Prepared Statement om SQL injection te elimineren
-					$query = "SELECT c.id AS subcat, a.id
+                if (!$R && !check_category($categorySEF)) {
+                    $MainQuery = "SELECT id AS catID, name, description
 						FROM " . _PRE . "categories AS c
-						LEFT JOIN " . _PRE . "articles AS a ON (a.category = c.id OR a.category = :id) AND a.position = 1
-						WHERE c.subcat = :id_parent
-						GROUP BY a.id";
-						
-					try {
-						$stmt = $database->prepare($query);
-						$stmt->execute(['id' => $id, 'id_parent' => $id]);
-						$rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-						
-						foreach ($rows as $r) {
-							if (isset($r['id']) && (int)$r['id'] > 0) {
-								if (function_exists('delete_item')) {
-									delete_item('comments', 'articleid', (int)$r['id']);
-									delete_item('articles', 'id', (int)$r['id']);
-								}
-							}
-							if (isset($r['subcat'])) {
-								$list[] = $r['subcat'];
-							}
-						}
-						
-						if (function_exists('delete_item')) {
-							delete_item('categories', 'subcat', $id);
-						}
-						if (function_exists('delete_cat')) {
-							delete_cat($id);
-						}
-					} catch (PDOException $e) {}
-					
-					if (function_exists('notification')) {
-						echo notification(0, '', 'snews_categories');
-					}
-					break;
+						WHERE seftitle = :categorySEF AND subcat = 0 " . $pub_c;
+                    $queryParams = ['categorySEF' => $categorySEF];
+                    $_TYPE = 6;
+                }
+            }
+        }
 
-				# DELETE COMMENT (PHP 8.1 safe type forcing & strict retrieve controls)
-				case 'deletecomment':
-					$get_commentid = isset($_GET['commentid']) ? (string)$_GET['commentid'] : '0';
-					$commentid = (int)cleanXSS($get_commentid);
-					if ($commentid === 0) {
-						return;
-					}
-					
-					// FIX: Strikte typeafhandeling en controle op databaseresultaten
-					$articleid_res = retrieve('articleid', 'comments', 'id', $commentid);
-					$articleid = (int)(is_array($articleid_res) ? ($articleid_res['articleid'] ?? 0) : $articleid_res);
-					
-					$articleSEF_res = retrieve('seftitle', 'articles', 'id', $articleid);
-					$articleSEF = (string)(is_array($articleSEF_res) ? ($articleSEF_res['seftitle'] ?? '') : $articleSEF_res);
-					
-					$articleCAT_res = retrieve('category', 'articles', 'id', $articleid);
-					$articleCAT = (int)(is_array($articleCAT_res) ? ($articleCAT_res['category'] ?? 0) : $articleCAT_res);
-					
-					$postCat = function_exists('cat_rel') ? cat_rel($articleCAT, 'seftitle') : '';
-					$link = (!empty($postCat) ? $postCat . '/' : '') . $articleSEF;
-					
-					if (function_exists('delete_item')) {
-						delete_item('comments', 'id', $commentid);
-					}
-					
-					if (function_exists('notification')) {
-						echo notification(0, '', $link);
-					}
-					
-					$redirect_url = _SITE . (!empty($postCat) ? $postCat . '/' : '') . $articleSEF . '/';
-					if (!headers_sent()) {
-						header('Refresh: 1; url=' . $redirect_url);
-					}
-					echo '<meta http-equiv="refresh" content="1; url=' . htmlspecialchars($redirect_url, ENT_QUOTES, 'UTF-8') . '">';
-					break;
-			}
-		}
-	}
+        if (!empty($MainQuery) && $database) {
+            $action = isset($_GET['action']) ? clean($_GET['action']) : '';
+            try {
+                $stmt = $database->prepare($MainQuery);
+                $stmt->execute($queryParams);
+                $R = $stmt->fetch(PDO::FETCH_ASSOC);
+                if (!$R) {
+                    $_TYPE = 11;
+                }
+            } catch (PDOException $e) {
+                $_TYPE = 11;
+            }
+            update_articles();
+        } else {
+            if (check_admin($categorySEF)) {
+                $_TYPE = 10;
+            } else if (check_category($categorySEF)) {
+                $_TYPE = 11;
+            } else if (isset($categorySEF) && check_category($categorySEF)) {
+                $categorySEF = '404';
+                header('HTTP/1.1 404 Not Found');
+                if (function_exists('set_error')) {
+                    set_error();
+                }
+            }
+        }
+    }
 
-
-// ADMIN CENTER (PHP 8.1 safe strong typed strict scaling switcher)
-function admin_center(mixed $action): void {
-	$action_str = trim((string)$action);
-	switch ($action_str) {
-		case 'snews_categories' : if (function_exists('admin_categories')) { admin_categories(); } break;
-		case 'admin_category'   : if (function_exists('form_categories')) { form_categories(); } break;
-		case 'admin_subcategory': if (function_exists('form_categories')) { form_categories('sub'); } break;
-		case 'groupings'        : if (function_exists('admin_groupings')) { admin_groupings(); } break;
-		case 'admin_groupings'  : if (function_exists('form_groupings')) { form_groupings(); } break;
-		case 'snews_articles'   : if (function_exists('admin_articles')) { admin_articles('article_view'); } break;
-		case 'extra_contents'   : if (function_exists('admin_articles')) { admin_articles('extra_view'); } break;
-		case 'snews_pages'      : if (function_exists('admin_articles')) { admin_articles('page_view'); } break;
-		case 'admin_article'    : if (function_exists('form_articles')) { form_articles(''); } break;
-		case 'article_new'      : if (function_exists('form_articles')) { form_articles('article_new'); } break;
-		case 'extra_new'        : if (function_exists('form_articles')) { form_articles('extra_new'); } break;
-		case 'page_new'         : if (function_exists('form_articles')) { form_articles('page_new'); } break;
-		case 'editcomment'      : if (function_exists('edit_comment')) { edit_comment(); } break;
-		case 'process'          : if (function_exists('processing')) { processing(); } break;
-		case 'hide'             : if (function_exists('visibility')) { visibility('hide'); } break;
-		case 'show'             : if (function_exists('visibility')) { visibility('show'); } break;
-	}
+    if (_ADMIN && isset($_GET['action'])) {
+        $url2 = explode('/', clean($_GET['action']));
+        $categorySEF = $url2[0] ?? '';
+        if (check_admin($categorySEF)) {
+            $_TYPE = 10;
+        }
+    }
+} else {
+    if ((int)s('display_page') !== 0) {
+        $_ID = (int)s('display_page');
+        $_TYPE = 7;
+    } else {
+        $_TYPE = 8;
+    }
 }
 
-// LOGOUT (Gemoderniseerd naar de geldende standaarden van PHP 8.1+)
-function logout(): void {
-	// Wis de actieve sessie-array veilig
-	$_SESSION = [];
-	
-	if (ini_get("session.use_cookies")) {
-		$params = session_get_cookie_params();
-		setcookie(session_name(), '', time() - 42000,
-			$params["path"], $params["domain"],
-			$params["secure"], $params["httponly"]
-		);
-	}
-	
-	if (session_status() === PHP_SESSION_ACTIVE) {
-		session_destroy();
-	}
-	
-	$redirect_url = _SITE;
-	if (!headers_sent()) {
-		header('Refresh: 2; url=' . $redirect_url);
-	}
-	echo '<meta http-equiv="refresh" content="2; url=' . htmlspecialchars($redirect_url, ENT_QUOTES, 'UTF-8') . '">';
-	echo '<h2>' . htmlspecialchars(l('log_out'), ENT_QUOTES, 'UTF-8') . '</h2>';
+unset($Try_Article, $MainQuery, $result, $pub_a, $pub_c, $pub_x, $queryParams);
+
+if (isset($R) && is_array($R)) {
+    $_ID = !empty($R['id']) ? (int)$R['id'] : 0;
+    $CAT = !empty($R['category']) ? (int)$R['category'] : 0;
+    $_POS = !empty($R['position']) ? (int)$R['position'] : 0;
+    $_catID = !empty($R['catID']) ? (int)$R['catID'] : 0;
+    $_subID = !empty($R['subID']) ? (int)$R['subID'] : 0;
+
+    $_TITLE = (string)($R['title'] ?? '');
+    $_NAME = (string)($R['name'] ?? '');
+    $_XNAME = (string)($R['xname'] ?? '');
+    $_KEYW = (string)($R['keywords_meta'] ?? '');
+
+    if (!empty($R['description_meta'])) {
+        $_DESCR = (string)$R['description_meta'];
+    } else {
+        $_DESCR = (string)($R['description'] ?? '');
+    }
+    unset($R);
 }
 
-// ROUTES INITIALIZATION
-if (function_exists('addRoute')) {
-	addRoute('administration', l('administration'), 'administration');
-	addRoute('logout', l('logout'), 'logout');
-	addRoute('snews_settings', l('settings'), 'settings');
-	addRoute('snews_files', l('files'), 'files');
-	addRoute('admin_addons', l('admin_addons'), 'showAdmAddons');
+if (isset($url) && is_array($url) && isset($url[3]) && (empty($_XNAME))) {
+    $commentsPage = $url[2] ?? '';
+    $_TYPE = 9;
 }
 
-?>
+// TITLE
+function title(): void
+{
+    global $categorySEF, $_DESCR, $_KEYW, $_TITLE, $_NAME, $_XNAME;
+
+    $categorySEF_str = (string)($categorySEF ?? '');
+    $lfeed = PHP_EOL . "\t";
+
+    echo '<meta charset="' . (!empty(s('charset')) ? htmlspecialchars(s('charset'), ENT_QUOTES, 'UTF-8') : 'UTF-8') . '" />' . $lfeed;
+    echo '<base href="' . htmlspecialchars(_SITE, ENT_QUOTES, 'UTF-8') . '" />' . $lfeed;
+
+    $title = !empty($_TITLE) ? $_TITLE . ' - ' : '';
+    $title .= !empty($_NAME) ? $_NAME . ' - ' : '';
+    $title .= !empty($_XNAME) ? $_XNAME . ' - ' : '';
+
+    if (!empty($categorySEF_str) && check_category($categorySEF_str) === true && $categorySEF_str !== 'administration') {
+        $title .= l($categorySEF_str) . ' - ';
+    }
+
+    $title .= s('website_title');
+    echo '<title>' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '</title>' . $lfeed;
+
+    $meta_descr = !empty($_DESCR) ? $_DESCR : s('website_description');
+    echo '<meta name="description" content="' . htmlspecialchars($meta_descr, ENT_QUOTES, 'UTF-8') . '" />' . $lfeed;
+
+    $meta_keyw = !empty($_KEYW) ? $_KEYW : s('website_keywords');
+    echo '<meta name="keywords" content="' . htmlspecialchars($meta_keyw, ENT_QUOTES, 'UTF-8') . '" />' . PHP_EOL;
+
+    $js_list = explode(',', l('js_inc'));
+    if (_ADMIN || in_array($categorySEF_str, $js_list, true)) {
+        $js_v = (file_exists(__DIR__ . '/js/admin.js') ? (int)filemtime(__DIR__ . '/js/admin.js') : 0);
+        echo "\t" . '<script src="js/admin.js?v=' . $js_v . '"></script>' . PHP_EOL;
+    }
+}
+
+// BREADCRUMBS
+function breadcrumbs(): void
+{
+    global $categorySEF, $subcatSEF, $_POS, $_TITLE, $_NAME, $_XNAME;
+
+    $categorySEF_str = (string)($categorySEF ?? '');
+    $subcatSEF_str = (string)($subcatSEF ?? '');
+
+    $paginator_prefix = l('paginator');
+    $pag_len = mb_strlen($paginator_prefix);
+
+    $subcat = (!empty($subcatSEF_str) && !(mb_strlen($subcatSEF_str) >= $pag_len && mb_substr($subcatSEF_str, 0, $pag_len) === $paginator_prefix)) ? $subcatSEF_str : '';
+    $link = '<a href="' . _SITE;
+
+    if (_ADMIN) {
+        echo $link . 'administration/" title="' . htmlspecialchars(l('administration'), ENT_QUOTES, 'UTF-8') . '">' . l('administration') . '</a> ' . l('divider') . ' ';
+    }
+
+    echo (!empty($categorySEF_str) ? $link . '">' . l('home') . '</a>' : l('home'));
+
+    if (!empty($categorySEF_str) && check_category($categorySEF_str) === false) {
+        echo ($categorySEF_str === '404' ? ' ' . l('divider') . ' HTTP 404' : '');
+        echo (!empty($subcat) ? ' ' . l('divider') . ' ' . $link . htmlspecialchars($categorySEF_str, ENT_QUOTES, 'UTF-8') . '/">' . (!empty($_XNAME) ? htmlspecialchars($_XNAME, ENT_QUOTES, 'UTF-8') : htmlspecialchars($_NAME, ENT_QUOTES, 'UTF-8')) . '</a>' : (!empty($_NAME) ? ' ' . l('divider') . ' ' . htmlspecialchars($_NAME, ENT_QUOTES, 'UTF-8') : ''));
+        if (!empty($subcat) && !empty($_XNAME)) {
+            echo ((int)$_POS === 1 ? ' ' . l('divider') . ' ' . $link . htmlspecialchars($categorySEF_str, ENT_QUOTES, 'UTF-8') . '/' . htmlspecialchars($subcat, ENT_QUOTES, 'UTF-8') . '/">' . htmlspecialchars($_NAME, ENT_QUOTES, 'UTF-8') . '</a>' : ' ' . l('divider') . ' ' . htmlspecialchars($_NAME, ENT_QUOTES, 'UTF-8'));
+        }
+        echo (!empty($_TITLE) ? ' ' . l('divider') . ' ' . htmlspecialchars($_TITLE, ENT_QUOTES, 'UTF-8') : '');
+    }
+
+    if (!empty($categorySEF_str) && check_category($categorySEF_str) === true && $categorySEF_str !== 'administration') {
+        $catSEF = l($categorySEF_str);
+        $addonSEF = l($categorySEF_str . '_title');
+        echo ' ' . l('divider') . ' ' . (!empty($catSEF) ? $catSEF : $addonSEF);
+    }
+}
+
+// DISPLAY CATEGORIES
+function categories(): void
+{
+    global $categorySEF;
+    $categorySEF_str = (string)($categorySEF ?? '');
+    $database = db();
+    if (!$database) {
+        echo '<li>' . l('no_categories') . '</li>';
+        return;
+    }
+
+    $qwr = !_ADMIN ? " AND a.visible='YES'" : '';
+    if (s('num_categories') === 'on') {
+        $count = ', COUNT(DISTINCT a.id) as total';
+        $join = 'LEFT OUTER JOIN ' . _PRE . 'articles AS a ON (a.category = c.id AND a.position = 1 AND a.published = 1' . $qwr . ')';
+    } else {
+        $count = '';
+        $join = '';
+    }
+
+    $ignore = explode(',', l('ignore_cats'));
+    $query = "SELECT c.seftitle, c.name, description, c.id AS parent" . $count . "
+		FROM " . _PRE . "categories AS c " . $join . "
+		WHERE c.subcat = 0 AND c.published = 'YES'
+		GROUP BY c.id
+		ORDER BY c.catorder, c.id";
+
+    try {
+        $result = $database->query($query);
+        if ($result) {
+            $has_rows = false;
+            foreach ($result as $r) {
+                $has_rows = true;
+                $category_title = (string)$r['seftitle'];
+
+                if (s('language') !== 'EN' && $r['name'] === 'Uncategorized' && (int)$r['parent'] === 1) {
+                    $r['name'] = l('uncategorised');
+                }
+
+                $class = $category_title === $categorySEF_str ? ' class="active"' : '';
+                $num = isset($r['total']) ? ' (' . $r['total'] . ')' : '';
+
+                if (!in_array($category_title, $ignore, true)) {
+                    echo '<li' . $class . '><a href="' . _SITE . htmlspecialchars($category_title, ENT_QUOTES, 'UTF-8') . '/" title="' . htmlspecialchars((string)$r['name'], ENT_QUOTES, 'UTF-8') . ' - ' . htmlspecialchars((string)$r['description'], ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars((string)$r['name'], ENT_QUOTES, 'UTF-8') . $num . '</a>';
+                    $parent = (int)$r['parent'];
+                    if ($category_title === $categorySEF_str) {
+                        subcategories($parent);
+                    }
+                    echo '</li>';
+                }
+            }
+            if (!$has_rows) {
+                echo '<li>' . l('no_categories') . '</li>';
+            }
+        }
+    } catch (PDOException $e) {
+        echo '<li>' . l('no_categories') . '</li>';
+    }
+}
+
+// SUB-CATEGORIES
+function subcategories(mixed $parent): void
+{
+    global $categorySEF, $subcatSEF;
+    $categorySEF_str = (string)($categorySEF ?? '');
+    $subcatSEF_str = (string)($subcatSEF ?? '');
+    $database = db();
+    if (!$database) {
+        return;
+    }
+
+    $qwr = !_ADMIN ? " AND a.visible='YES'" : '';
+    if (s('num_categories') === 'on') {
+        $count = ', COUNT(DISTINCT a.id) AS total';
+        $join = 'LEFT OUTER JOIN ' . _PRE . 'articles AS a ON (a.category = c.id AND a.position = 1 AND a.published = 1' . $qwr . ')';
+    } else {
+        $count = '';
+        $join = '';
+    }
+
+    $ignore = explode(',', l('ignore_cats'));
+
+    $query = "SELECT c.seftitle AS subsef, description, name" . $count . "
+		FROM " . _PRE . "categories AS c " . $join . "
+		WHERE c.subcat = :parent AND c.published = 'YES'
+		GROUP BY c.id
+		ORDER BY c.catorder, c.id";
+
+    try {
+        $stmt = $database->prepare($query);
+        $stmt->execute(['parent' => (int)$parent]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (!empty($rows)) {
+            echo '<ul class="subcat">';
+            foreach ($rows as $s) {
+                $subSEF = (string)$s['subsef'];
+                $class = $subSEF === $subcatSEF_str ? ' class="active"' : '';
+                $num = isset($s['total']) ? ' (' . $s['total'] . ')' : '';
+                if (!in_array($subSEF, $ignore, true)) {
+                    echo '<li' . $class . '>';
+                    echo '<a href="' . _SITE . htmlspecialchars($categorySEF_str, ENT_QUOTES, 'UTF-8') . '/' . htmlspecialchars($subSEF, ENT_QUOTES, 'UTF-8') . '/" title="' . htmlspecialchars((string)$s['description'], ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars((string)$s['name'], ENT_QUOTES, 'UTF-8') . $num . '</a>';
+                    echo '</li>';
+                }
+            }
+            echo '</ul>';
+        }
+    } catch (PDOException $e) {
+        // silent
+    }
+}
+
+// DISPLAY PAGES
+function pages(string $list = '', bool $ul = false): void
+{
+    global $categorySEF;
+
+    $categorySEF_str = (string)($categorySEF ?? '');
+    $list = empty($list) ? l('page_list') : $list;
+    $pages = explode(',', $list);
+    $ignore = explode(',', l('ignored_pages'));
+    $qwr = !_ADMIN ? " AND visible='YES'" : '';
+
+    $nav = $ul;
+
+    foreach ($pages as $page_item) {
+        switch (trim($page_item)) {
+            case 'home':
+                $class = empty($categorySEF_str) ? ' class="active"' : '';
+                echo '<li' . $class . '><a href="' . _SITE . '">' . l('home') . '</a></li>';
+                break;
+            case 'archive':
+                $class = ($categorySEF_str === 'archive') ? ' class="active"' : '';
+                echo '<li' . $class . '><a href="' . _SITE . 'archive/">' . l('archive') . '</a></li>';
+                break;
+            case 'contact':
+                $class = ($categorySEF_str === 'contact') ? ' class="active"' : '';
+                echo '<li' . $class . '><a href="' . _SITE . 'contact/">' . l('contact') . '</a></li>';
+                break;
+            case 'sitemap':
+                $class = ($categorySEF_str === 'sitemap') ? ' class="active"' : '';
+                echo '<li' . $class . '><a href="' . _SITE . 'sitemap/">' . l('sitemap') . '</a></li>';
+                break;
+            case 'pages':
+                $database = db();
+                if (!$database) {
+                    break;
+                }
+                $query = "SELECT id, seftitle, title FROM " . _PRE . "articles WHERE position = 3 $qwr ORDER BY artorder ASC, id";
+                try {
+                    $result = $database->query($query);
+                    if ($result) {
+                        if ($nav) {
+                            echo '<ul>';
+                        }
+                        foreach ($result as $r) {
+                            $title = (string)$r['title'];
+                            $class = ($categorySEF_str === (string)$r['seftitle']) ? ' class="active"' : '';
+                            if ((int)$r['id'] !== (int)s('display_page') && !in_array((string)$r['seftitle'], $ignore, true)) {
+                                echo '<li' . $class . '><a href="' . _SITE . htmlspecialchars((string)$r['seftitle'], ENT_QUOTES, 'UTF-8') . '/">' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '</a></li>';
+                            }
+                        }
+                        if ($nav) {
+                            echo '</ul>';
+                        }
+                    }
+                } catch (PDOException $e) {
+                }
+                break;
+        }
+    }
+}
+
+// EXTRA CONTENT
+function extra(mixed $mode = '', int $styleit = 0, string $classname = '', string $idname = ''): void
+{
+    global $categorySEF, $subcatSEF, $articleSEF, $_ID, $_catID, $_subID;
+
+    $categorySEF_str = (string)($categorySEF ?? '');
+    $subcatSEF_str = (string)($subcatSEF ?? '');
+    $articleSEF_str = (string)($articleSEF ?? '');
+
+    $database = db();
+    if (!$database) {
+        return;
+    }
+
+    if (empty($mode)) {
+        $mode_res = retrieve('seftitle', 'extras', 'id', '1');
+        $mode = is_array($mode_res) ? ($mode_res['seftitle'] ?? '') : (string)$mode_res;
+    }
+
+    $qwr = !_ADMIN ? " AND visible='YES'" : '';
+    $mode = strtolower((string)$mode);
+
+    $getExtra_res = retrieve('id', 'extras', 'seftitle', $mode);
+    $getExtra = (int)(is_array($getExtra_res) ? ($getExtra_res['id'] ?? 1) : $getExtra_res);
+
+    $getArt = !empty($_ID) ? (int)$_ID : 0;
+
+    $url = $categorySEF_str . (!empty($subcatSEF_str) ? '/' . $subcatSEF_str : '') . (!empty($articleSEF_str) ? '/' . $articleSEF_str : '');
+    $url = !empty($url) ? $url : 'home';
+
+    $v_subID = (int)($_subID ?? 0);
+    $v_ID = (int)($_ID ?? 0);
+    $v_catID = (int)($_catID ?? 0);
+
+    $sql_cat = "AND (
+		(category = -1" . ($v_subID !== 0 ? " AND show_in_subcats = 'YES'" : "") . ")
+		" . ($v_ID !== 0 && $v_catID === 0 ? " OR (category = -3 AND (page_extra = 0 OR page_extra = " . $v_ID . "))" : "") . "
+		" . ($v_catID !== 0 && $v_subID === 0 ? " OR (category = " . $v_catID . ")" : "") . "
+		" . ($v_subID !== 0 && empty($subcatSEF_str) ? " OR (category = " . $v_catID . ")" : "") . "
+		" . ($v_subID !== 0 && !empty($subcatSEF_str) ? " OR (category = " . $v_catID . " OR (category = " . $v_subID . " AND show_in_subcats = 'YES'))" : "") . "
+	)";
+
+    $sql = "SELECT id, title, seftitle, text, category, extraid, page_extra, position, displaytitle, show_in_subcats, visible
+		FROM " . _PRE . "articles
+		WHERE published = 1 AND position = 2 " . $sql_cat;
+
+    $target_extraid = $getExtra > 0 ? $getExtra : 1;
+    $query = $sql . " AND extraid = " . $target_extraid . $qwr . " ORDER BY artorder ASC, id ASC";
+
+    try {
+        $result = $database->query($query);
+        if ($result) {
+            $paginator_prefix = l('paginator');
+            $pag_len = mb_strlen($paginator_prefix);
+
+            foreach ($result as $r) {
+                $category = (int)$r['category'];
+                $page = (int)$r['page_extra'];
+                $print = false;
+
+                switch (true) {
+                    case ($category === 0 && $page < 1):
+                        $print = false;
+                        break;
+                    case ($category === 0 && $v_catID === 0 && !empty($r['page_extra'])):
+                        $print = (check_category($subcatSEF_str) !== true);
+                        break;
+                    case ($category === $v_catID || ($category === $v_subID && $r['show_in_subcats'] === 'YES')):
+                        $print = true;
+                        break;
+                    case ($category === -3 && $getArt === $page):
+                        $print = true;
+                        break;
+                    case ($category === -3 && $v_catID === 0 && $getArt !== $page && $page === 0 && !check_category($categorySEF_str) && !(mb_strlen($categorySEF_str) >= $pag_len && mb_substr($categorySEF_str, 0, $pag_len) === $paginator_prefix)):
+                        $print = true;
+                        break;
+                    case ($category === -1 && $v_catID === 0 && $getArt !== $page && $page === 0):
+                        $print = true;
+                        break;
+                    case ($category === -1):
+                        $print = true;
+                        break;
+                    default:
+                        $print = false;
+                }
+
+                if ($print === true) {
+                    if ($styleit === 1) {
+                        $classname_attr = !empty($classname) ? ' class="' . htmlspecialchars($classname, ENT_QUOTES, 'UTF-8') . '"' : '';
+                        $idname_attr = !empty($idname) ? ' id="' . htmlspecialchars($idname, ENT_QUOTES, 'UTF-8') . '"' : '';
+                        echo '<div' . $classname_attr . $idname_attr . '>';
+                    }
+                    if ($r['displaytitle'] === 'YES') {
+                        echo '<h3>' . htmlspecialchars((string)$r['title'], ENT_QUOTES, 'UTF-8') . '</h3>';
+                    }
+
+                    if (function_exists('file_include')) {
+                        file_include($r['text'], 9999000);
+                    } else {
+                        echo $r['text'];
+                    }
+
+                    $action_url = '?action=';
+                    $visibility_html = $r['visible'] === 'YES' ? '<a href="' . _SITE . $action_url . 'hide&amp;item=snews_articles&amp;id=' . (int)$r['id'] . '&amp;back=' . urlencode($url) . '&amp;' . csrf_query() . '">' . l('hide') . '</a>' : l('hidden') . ' ( <a href="' . _SITE . $action_url . 'show&amp;item=snews_articles&amp;id=' . (int)$r['id'] . '&amp;back=' . urlencode($url) . '&amp;' . csrf_query() . '">' . l('show') . '</a> )';
+
+                    echo _ADMIN ? '<p><a href="' . _SITE . '?action=admin_article&amp;id=' . (int)$r['id'] . '" title="' . htmlspecialchars(l('edit') . ' ' . $r['seftitle'], ENT_QUOTES, 'UTF-8') . '">' . l('edit') . '</a> ' . l('divider') . ' ' . $visibility_html . '</p>' : '';
+
+                    if ($styleit === 1) {
+                        echo '</div>';
+                    }
+                }
+            }
+        }
+    } catch (PDOException $e) {
+    }
+}
+
+// PAGINATOR
+function paginator(mixed $pageNum, mixed $maxPage, string $pagePrefix): void
+{
+    global $categorySEF, $subcatSEF, $articleSEF, $_ID, $_catID, $_POS, $_XNAME;
+
+    $pageNum = (int)$pageNum;
+    $maxPage = (int)$maxPage;
+
+    $categorySEF_str = (string)($categorySEF ?? '');
+    $subcatSEF_str = (string)($subcatSEF ?? '');
+    $articleSEF_str = (string)($articleSEF ?? '');
+    $_XNAME_str = (string)($_XNAME ?? '');
+    $_POS_val = (int)($_POS ?? 0);
+
+    switch (true) {
+        case (!$_ID && !$_catID):
+            $uri = '';
+            break;
+        case ($_ID && !empty($_XNAME_str)):
+            $uri = $categorySEF_str . '/' . $subcatSEF_str . '/' . $articleSEF_str . '/';
+            break;
+        case ($_POS_val === 1 || !empty($_XNAME_str)):
+            $uri = $categorySEF_str . '/' . $subcatSEF_str . '/';
+            break;
+        default:
+            $uri = $categorySEF_str . '/';
+    }
+
+    $link = '<a href="' . _SITE . htmlspecialchars($uri, ENT_QUOTES, 'UTF-8');
+    $prefix = !empty($pagePrefix) ? $pagePrefix : '';
+
+    if ($pageNum > 1) {
+        $goTo = $link;
+        $prev = (($pageNum - 1) === 1 ? $goTo : $link . htmlspecialchars($prefix, ENT_QUOTES, 'UTF-8') . ($pageNum - 1) . '/') . '" title="' . htmlspecialchars(l('page') . ' ' . ($pageNum - 1), ENT_QUOTES, 'UTF-8') . '">&lt; ' . l('previous_page') . '</a> ';
+        $first = $goTo . '" title="' . htmlspecialchars(l('first_page') . ' ' . l('page'), ENT_QUOTES, 'UTF-8') . '">&lt;&lt; ' . l('first_page') . '</a>';
+    } else {
+        $prev = '&lt; ' . l('previous_page');
+        $first = '&lt;&lt; ' . l('first_page');
+    }
+
+    if ($pageNum < $maxPage) {
+        $next = $link . htmlspecialchars($prefix, ENT_QUOTES, 'UTF-8') . ($pageNum + 1) . '/" title="' . htmlspecialchars(l('page') . ' ' . ($pageNum + 1), ENT_QUOTES, 'UTF-8') . '">' . l('next_page') . ' &gt;</a> ';
+        $last = $link . htmlspecialchars($prefix, ENT_QUOTES, 'UTF-8') . $maxPage . '/" title="' . htmlspecialchars(l('last_page') . ' ' . l('page'), ENT_QUOTES, 'UTF-8') . '">' . l('last_page') . ' &gt;&gt;</a> ';
+    } else {
+        $next = l('next_page') . ' &gt; ';
+        $last = l('last_page') . ' &gt;&gt;';
+    }
+
+    echo '<div class="paginator">' . $first . ' ' . $prev . ' <strong>[' . $pageNum . '</strong> / <strong>' . $maxPage . ']</strong> ' . $next . ' ' . $last . '</div>';
+}
+
+// SET TO ONE ERROR
+function set_error(): void
+{
+    if (!headers_sent()) {
+        header('HTTP/1.1 404 Not Found');
+    }
+    // index.php buffers its output: discard the half-built page so only this small document is sent
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+    echo '<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<title>Error: 404</title>
+	<meta http-equiv="refresh" content="0; url=' . htmlspecialchars(site(), ENT_QUOTES, 'UTF-8') . '404/" />
+</head>
+<body>
+	<p class="warning">' . htmlspecialchars(l('error_404'), ENT_QUOTES, 'UTF-8') . '</p>
+</body>
+</html>';
+    exit;
+}
+
+// SHOW ERROR 404
+function show_404(): void
+{
+    if (!headers_sent()) {
+        header('HTTP/1.1 404 Not Found');
+    }
+    echo '<h1>HTTP 404</h1>';
+    echo '<p class="warning">' . htmlspecialchars(l('error_404'), ENT_QUOTES, 'UTF-8') . '</p>';
+}
+
+// MENU ARTICLES
+function menu_articles(mixed $start = 0, mixed $size = 5, mixed $cat_specific = 0): void
+{
+    global $_catID, $subcatSEF;
+
+    $database = db();
+    if (!$database) {
+        echo '<li>' . l('no_articles') . '</li>';
+        return;
+    }
+
+    $no_articles = '<li>' . l('no_articles') . '</li>';
+    $cat_id_val = (int)($_catID ?? 0);
+    $subcatSEF_str = (string)($subcatSEF ?? '');
+    $cat_specific = (int)$cat_specific;
+
+    $subcat_sql = '';
+    if ($cat_specific === 1 && $cat_id_val !== 0 && empty($subcatSEF_str)) {
+        $subcat_sql = " AND c.subcat = " . $cat_id_val;
+    } elseif ($cat_specific === 2 && $cat_id_val !== 0) {
+        $subcat_sql = " AND c.subcat = " . $cat_id_val;
+    }
+
+    $start_int = (int)$start;
+    $size_int = (int)$size;
+
+    $query = "SELECT title, a.seftitle AS asef, date, c.name AS name, c.seftitle AS csef, x.name AS xname, x.seftitle AS xsef
+		FROM " . _PRE . "articles AS a
+		LEFT OUTER JOIN " . _PRE . "categories as c ON a.category = c.id
+		LEFT OUTER JOIN " . _PRE . "categories as x ON c.subcat = x.id AND x.published = 'YES'
+		WHERE a.position = 1
+			AND a.published = 1
+			AND c.published = 'YES'
+			AND a.visible = 'YES'
+			" . $subcat_sql . "
+		ORDER BY date DESC
+		LIMIT " . $start_int . ", " . $size_int;
+
+    try {
+        $result = $database->query($query);
+        if ($result) {
+            $n = 0;
+            $show_cat_names = s('show_cat_names');
+            $date_format = s('date_format');
+
+            foreach ($result as $r) {
+                $name = $show_cat_names === 'on' ? ' (' . htmlspecialchars((string)$r['name'], ENT_QUOTES, 'UTF-8') . ')' : '';
+                $date = date(!empty($date_format) ? $date_format : 'Y-m-d', strtotime((string)$r['date']));
+                $link = isset($r['xsef']) ? (string)$r['xsef'] . '/' . (string)$r['csef'] : (string)$r['csef'];
+
+                echo '<li><a href="' . _SITE . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '/' . htmlspecialchars((string)$r['asef'], ENT_QUOTES, 'UTF-8') . '/"
+					title="' . htmlspecialchars((string)$r['name'] . ' / ' . (string)$r['title'] . ' (' . $date . ')', ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars((string)$r['title'], ENT_QUOTES, 'UTF-8') . $name . '</a></li>';
+                $n++;
+            }
+            if ($n === 0) {
+                echo $no_articles;
+            }
+        } else {
+            echo $no_articles;
+        }
+    } catch (PDOException $e) {
+        echo $no_articles;
+    }
+}
+
+// ARTICLES
+function articles(): void
+{
+    global $categorySEF, $subcatSEF, $_NAME, $articleSEF, $_ID, $_catID, $_TYPE;
+
+    $database = db();
+    if (!$database) {
+        return;
+    }
+
+    $categorySEF_str = (string)($categorySEF ?? '');
+    $subcatSEF_str = (string)($subcatSEF ?? '');
+    $articleSEF_str = (string)($articleSEF ?? '');
+    $_NAME_str = (string)($_NAME ?? '');
+
+    $num = 0;
+    $display = (int)s('display_page');
+    $v_ID = (int)($_ID ?? 0);
+    $v_catID = (int)($_catID ?? 0);
+    $_TYPE = (int)($_TYPE ?? 0);
+
+    $admin = '<a href="' . _SITE . 'administration/" title="' . htmlspecialchars(l('administration'), ENT_QUOTES, 'UTF-8') . '">' . l('administration') . '</a>';
+    $title_not_found = '<h2>' . l('none_yet') . '</h2>';
+    $title_not_found .= _ADMIN ? '<p>' . l('create_new') . ' ' . $admin . '</p>' : '';
+    $visible = _ADMIN ? '' : " AND a.visible='YES' ";
+    $on = s('display_pagination') === 'on';
+
+    if ($v_catID === 0 && $_TYPE !== 4 && $_TYPE !== 5 && $_TYPE !== 7 && $_TYPE !== 8) {
+        set_error();
+        return;
+    }
+
+    if ($_TYPE >= 1 && $_TYPE < 10) {
+        if ($_TYPE === 1 || $_TYPE === 2 || $_TYPE === 9) {
+            $num = stats('articles', '', 'id=' . $v_ID);
+        } elseif (($_TYPE === 3 || $_TYPE === 6) && $v_catID !== 0) {
+            $num = stats('articles', '', 'category=' . $v_catID . ' AND position = 1');
+        } elseif ($_TYPE === 5) {
+            $num = stats('articles', '', 'id=' . $v_ID);
+        } elseif ($_TYPE === 7 || $_TYPE === 4 || $_TYPE === 8) {
+            $num = ($display !== 0 && $_TYPE === 7) ? stats('articles', '', 'id=' . $v_ID) : stats('articles', '', "show_on_home = 'YES' AND position = 1");
+        }
+
+        if ($num !== 0) {
+            $position = ($_TYPE === 5 || ($_TYPE === 7 && $display !== 0)) ? 3 : 1;
+            $with_category = ($_TYPE !== 4 && $_TYPE !== 7 && $_TYPE !== 8) ? ' AND category = ' . $v_catID : " AND show_on_home = 'YES'";
+            if ($_TYPE === 5) {
+                $with_category = '';
+            }
+            $articleID = $v_ID !== 0 ? ' AND a.id = ' . $v_ID . ' ' : '';
+
+            $articleCount = (int)s('article_limit');
+            $article_limit = ($articleCount < 1) ? 100 : $articleCount;
+            $totalPages = (int)ceil($num / $article_limit);
+
+            $currentPage = 1;
+            if ($on === true) {
+                $SEF = !empty($articleSEF_str) ? $articleSEF_str : (!empty($subcatSEF_str) ? $subcatSEF_str : $categorySEF_str);
+                $paginator_prefix = l('paginator');
+                if (!empty($paginator_prefix) && str_starts_with($SEF, $paginator_prefix)) {
+                    $currentPage = (int)str_replace($paginator_prefix, '', $SEF);
+                }
+            }
+            if ($currentPage < 1) {
+                $currentPage = 1;
+            }
+
+            $query_articles = "SELECT a.id AS aid, title, a.seftitle AS asef, text, a.date, a.category, a.displaytitle, a.displayinfo, a.commentable, a.visible
+			FROM " . _PRE . "articles AS a
+			WHERE a.position = " . (int)$position . "
+				AND a.published = 1 " . $with_category . $articleID . $visible . "
+			ORDER BY a.artorder ASC, a.date DESC
+			LIMIT " . (int)(($currentPage - 1) * $article_limit) . ", " . (int)$article_limit;
+
+            $infoline = false;
+            $commentable = '';
+            $comment_article_cat = 0;
+
+            try {
+                $result = $database->query($query_articles);
+                if ($result) {
+                    $link = '<a href="' . _SITE;
+                    $date_format = s('date_format');
+
+                    foreach ($result as $r) {
+                        $infoline = $r['displayinfo'] === 'YES';
+                        $text = (string)($r['text'] ?? '');
+                        // The editor puts the [break] marker in a paragraph of its own: reduce it to the bare marker,
+                        // so the article is cut between two paragraphs and no empty <p></p> is left behind.
+                        $text = preg_replace('~<p(?:\s[^>]*)?>\s*\[break\]\s*</p>~i', '[break]', $text) ?? $text;
+                        $shorten = 9999000;
+
+                        if ($currentPage > 0 && $v_ID === 0 && !empty($text)) {
+                            $short_display = strpos($text, '[break]');
+                            if ($short_display !== false) {
+                                $shorten = $short_display === 0 ? 9999000 : $short_display;
+                            } elseif (strlen($text) > 255) {
+                                $short_display = strpos($text, '.', 255);
+                                if ($short_display !== false) {
+                                    $shorten = $short_display + 1;
+                                }
+                            }
+                        }
+
+                        $comments_num = stats('comments', '', 'articleid = ' . (int)$r['aid'] . ' AND approved = \'True\'');
+                        $a_date_format = date(!empty($date_format) ? $date_format : 'Y-m-d', strtotime((string)$r['date']));
+                        $uri = (int)$r['category'] !== 0 ? cat_rel($r['category'], 'seftitle') : '';
+                        $title = (string)$r['title'];
+
+                        if ($r['displaytitle'] === 'YES') {
+                            if ($v_ID === 0) {
+                                echo '<h2 class="big">' . $link . htmlspecialchars($uri, ENT_QUOTES, 'UTF-8') . '/' . htmlspecialchars((string)$r['asef'], ENT_QUOTES, 'UTF-8') . '/">' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '</a></h2>';
+                            } else {
+                                echo '<h2>' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '</h2>';
+                            }
+                        }
+
+                        // Schoon eventuele lege witregel-paragrafen rondom de [break] op
+                        $display_text = preg_replace('/<p><br\s*\/?>\s*<\/p>\s*\[break\]/i', '[break]', $text);
+                        $display_text = preg_replace('/\[break\]\s*<p><br\s*\/?>\s*<\/p>/i', '[break]', $display_text);
+
+                        if (function_exists('file_include')) {
+                            file_include(str_replace('[break]', '', $display_text), $shorten);
+                        } else {
+                            echo str_replace('[break]', '', $display_text);
+                        }
+
+                        // Toon altijd een duidelijke klikbare "Lees meer" knop wanneer een artikel is ingekort door [break] of tekenlimiet
+                        $is_shortened = ($v_ID === 0 && (str_contains($text, '[break]') || strlen($text) > $shorten));
+                        if ($is_shortened) {
+                            $art_url = _SITE . (!empty($uri) ? htmlspecialchars($uri, ENT_QUOTES, 'UTF-8') . '/' : '') . htmlspecialchars((string)$r['asef'], ENT_QUOTES, 'UTF-8') . '/';
+                            $read_more_label = (function_exists('l') && l('read_more')) ? l('read_more') : 'Lees meer';
+                            echo '<p class="snews-readmore"><a href="' . $art_url . '" title="' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($read_more_label, ENT_QUOTES, 'UTF-8') . ' &raquo;</a></p>';
+                        }
+
+                        $commentable = (string)$r['commentable'];
+                        $comment_article_cat = (int)$r['category'];
+                        $hide = '?action=hide&amp;item=snews_articles&amp;id=' . (int)$r['aid'] . '&amp;back=' . urlencode($uri) . '&amp;' . csrf_query();
+                        $show = '?action=show&amp;item=snews_articles&amp;id=' . (int)$r['aid'] . '&amp;back=' . urlencode($uri) . '&amp;' . csrf_query();
+
+                        $visiblity = $r['visible'] === 'YES' ? $link . $hide . '">' . l('hide') . '</a>' : l('hidden') . ' ( ' . $link . $show . '">' . l('show') . '</a> )';
+
+                        $edit_link = $link . '?action=admin_article&amp;id=' . (int)$r['aid'] . '" title="' . htmlspecialchars($title, ENT_QUOTES, 'UTF-8') . '">' . l('edit') . '</a> ';
+                        $edit_link .= ' ' . l('divider') . ' ' . $visiblity;
+
+                        if ($infoline) {
+                            $tag_items = explode(',', tags('infoline'));
+                            foreach ($tag_items as $tag_item) {
+                                $tag_item = trim($tag_item);
+                                switch (true) {
+                                    case ($tag_item === 'date'):
+                                        echo htmlspecialchars($a_date_format, ENT_QUOTES, 'UTF-8');
+                                        break;
+                                    case ($tag_item === 'readmore' && strlen($text) > $shorten && !$is_shortened):
+                                        echo $link . htmlspecialchars($uri, ENT_QUOTES, 'UTF-8') . '/' .
+                                             htmlspecialchars((string)$r['asef'], ENT_QUOTES, 'UTF-8') . '/">' .
+                                             l('read_more') . '</a> ';
+                                        break;
+                                    case ($tag_item === 'comments' && ($commentable === 'YES' || $commentable === 'FREEZ')):
+                                        echo $link . htmlspecialchars($uri, ENT_QUOTES, 'UTF-8') . '/' .
+                                             htmlspecialchars((string)$r['asef'], ENT_QUOTES, 'UTF-8') . '/#' .
+                                             l('comment') . '1">';
+                                        echo l('comments') . ' (' . $comments_num . ')</a> ';
+                                        break;
+                                    case ($tag_item === 'edit' && _ADMIN):
+                                        echo ' ' . $edit_link;
+                                        break;
+                                    case ($tag_item !== 'readmore' && $tag_item !== 'comments' && $tag_item !== 'edit'):
+                                        // The infoline template comes from config.php and intentionally contains HTML.
+                                        echo $tag_item;
+                                        break;
+                                }
+                            }
+                        } elseif (_ADMIN) {
+                            echo '<p>' . $edit_link . '</p>';
+                        }
+                    }
+                }
+            } catch (PDOException $e) {
+                // silent
+            }
+
+            if ($_TYPE !== 2 && ($num > $article_limit) && $on) {
+                paginator($currentPage, $totalPages, l('paginator'));
+            }
+
+            // Comments depend on the article's own "enable commenting" setting only (not on "display info").
+            if ($v_ID > 0 && function_exists('comment')) {
+                if ($commentable === 'YES') {
+                    comment('unfreezed');
+                } elseif ($commentable === 'FREEZ') {
+                    comment('freezed');
+                } elseif (_ADMIN && $comment_article_cat > 0 && isset($edit_link)) {
+                    // Only the administrator sees this: it explains why an article has no comment section.
+                    $is_nl = strtolower(s('language')) === 'nl';
+                    $hint = $is_nl
+                        ? 'Reacties staan uit voor dit artikel (alleen zichtbaar voor de beheerder). Zet in de editor het vinkje'
+                        : 'Comments are switched off for this article (only visible to the administrator). Tick';
+                    $hint_label = l('enable_commenting') !== '' ? l('enable_commenting') : ($is_nl ? 'Reacties toestaan' : 'Enable commenting');
+                    $hint_end = $is_nl ? 'aan:' : 'in the editor:';
+                    echo '<p class="message"><em>' . $hint . ' &laquo;' . htmlspecialchars($hint_label, ENT_QUOTES, 'UTF-8') . '&raquo; ' . $hint_end . '</em> ' . $edit_link . '</p>';
+                }
+            }
+        } else {
+            if (_ADMIN) {
+                echo $title_not_found;
+            } else {
+                echo '<h2 class="big">' . htmlspecialchars($_NAME_str, ENT_QUOTES, 'UTF-8') . '</h2>';
+                echo '<p>' . l('no_articles') . '</p>';
+            }
+        }
+    }
+}
+
+// COMMENTS
+function comment(string $freeze_status): void
+{
+    global $categorySEF, $subcatSEF, $articleSEF, $_ID, $commentsPage;
+
+    $database = db();
+    if (!$database) {
+        return;
+    }
+
+    // Label from the language file, or a built-in fallback when the key is missing (Dutch for site language NL)
+    $is_nl = strtolower(s('language')) === 'nl';
+    $txt = static function (string $key, string $en, string $nl) use ($is_nl): string {
+        $text = l($key);
+        return $text !== '' ? $text : ($is_nl ? $nl : $en);
+    };
+
+    $commentsPage_str = (string)($commentsPage ?? '1');
+    $commentsPage_clean = str_replace(l('comment_pages'), '', $commentsPage_str);
+    $commentsPage_num = (!is_numeric($commentsPage_clean) || (int)$commentsPage_clean < 1) ? 1 : (int)$commentsPage_clean;
+
+    $articleSEF_str = (string)($articleSEF ?? '');
+    $paginator_prefix = l('paginator');
+    if (!empty($paginator_prefix) && str_starts_with($articleSEF_str, $paginator_prefix)) {
+        $articleSEF_str = str_replace($paginator_prefix, '', $articleSEF_str);
+    }
+
+    echo '<h3>' . htmlspecialchars($txt('comments', 'Comments', 'Reacties'), ENT_QUOTES, 'UTF-8') . '</h3>';
+
+    $comments_order = s('comments_order');
+    $comments_order = (strtolower($comments_order) === 'desc') ? 'DESC' : 'ASC';
+
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['comment'])) {
+        comment_process();
+        return;
+    }
+
+    // Display existing comments + form
+    $commentCount = (int)s('comment_limit');
+    $comment_limit = ($commentCount < 1) ? 100 : $commentCount;
+
+    $pageNum = $commentsPage_num;
+    $offset = ($pageNum - 1) * $comment_limit;
+
+    $v_ID = (int)($_ID ?? 0);
+    $numrows = stats('comments', '', 'articleid = ' . $v_ID . ' AND approved = \'True\'');
+
+    if ($numrows > 0) {
+        $query = "SELECT id, articleid, name, url, comment, time, approved
+			FROM " . _PRE . "comments
+			WHERE articleid = :articleid AND approved = 'True'
+			ORDER BY id " . $comments_order . "
+			LIMIT :offset, :limit";
+
+        try {
+            $stmt = $database->prepare($query);
+            $stmt->bindValue(':articleid', $v_ID, PDO::PARAM_INT);
+            $stmt->bindValue(':offset', (int)$offset, PDO::PARAM_INT);
+            $stmt->bindValue(':limit', (int)$comment_limit, PDO::PARAM_INT);
+            $stmt->execute();
+
+            $ordinal = 1;
+            $date_format = s('date_format');
+            $edit_link = ' <a href="' . _SITE . '?action=';
+
+            echo '<div class="comment_limit">';
+            while ($r = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $date = date(!empty($date_format) ? $date_format : 'Y-m-d', strtotime((string)$r['time']));
+                $commentNum = $offset + $ordinal;
+
+                $tag_items = explode(',', tags('comments'));
+                foreach ($tag_items as $tag_item) {
+                    $tag_item = trim($tag_item);
+                    switch (true) {
+                        case ($tag_item === 'date'):
+                            echo '<a id="' . htmlspecialchars(l('comment') . $commentNum, ENT_QUOTES, 'UTF-8') . '" name="' . htmlspecialchars(l('comment') . $commentNum, ENT_QUOTES, 'UTF-8') . '"></a>' . htmlspecialchars($date, ENT_QUOTES, 'UTF-8');
+                            break;
+                        case ($tag_item === 'name'):
+                            $r_name = (string)$r['name'];
+                            echo !empty($r['url']) ? '<a href="' . htmlspecialchars((string)$r['url'], ENT_QUOTES, 'UTF-8') . '" title="' . htmlspecialchars((string)$r['url'], ENT_QUOTES, 'UTF-8') . '" rel="nofollow">' . htmlspecialchars($r_name, ENT_QUOTES, 'UTF-8') . '</a> ' : htmlspecialchars($r_name, ENT_QUOTES, 'UTF-8');
+                            break;
+                        case ($tag_item === 'comment'):
+                            echo (string)$r['comment'];
+                            break;
+                        case ($tag_item === 'edit' && _ADMIN):
+                            echo $edit_link . 'editcomment&amp;commentid=' . (int)$r['id'] . '" title="' . htmlspecialchars(l('edit') . ' ' . l('comment'), ENT_QUOTES, 'UTF-8') . '">' . l('edit') . '</a> ';
+                            echo $edit_link . 'process&amp;task=deletecomment&amp;commentid=' . (int)$r['id'] . '&amp;' . csrf_query() . '" title="' . htmlspecialchars(l('delete') . ' ' . l('comment'), ENT_QUOTES, 'UTF-8') . '" onclick="return pop(\'' . htmlspecialchars(l('js_delete2'), ENT_QUOTES, 'UTF-8') . '\')">' . l('delete') . '</a>';
+                            break;
+                        case ($tag_item === 'edit'):
+                            // administrators only (handled above); visitors see nothing
+                            break;
+                        default:
+                            // The template comes from config.php and intentionally contains HTML (like the infoline).
+                            echo $tag_item;
+                    }
+                }
+                $ordinal++;
+            }
+            echo '</div>';
+        } catch (PDOException $e) {
+        }
+
+        $maxPage = (int)ceil($numrows / $comment_limit);
+        if ($maxPage > 1) {
+            paginator($pageNum, $maxPage, l('comment_pages'));
+        }
+    }
+
+    if ($freeze_status !== 'freezed' && s('freeze_comments') !== 'YES') {
+        if ($numrows === 0) {
+            echo '<p>' . htmlspecialchars($txt('no_comment', 'There are no comments yet.', 'Er zijn nog geen reacties.'), ENT_QUOTES, 'UTF-8') . '</p>';
+        }
+
+        // Simple form (you can expand with the full original form if needed)
+        echo '<div class="commentsbox">
+			<h2>' . htmlspecialchars($txt('addcomment', 'Add a comment', 'Plaats een reactie'), ENT_QUOTES, 'UTF-8') . '</h2>
+			<form method="post" action="' . _SITE . '" id="post" accept-charset="UTF-8">
+				<p>' . htmlspecialchars($txt('required', '* = required', '* = verplicht'), ENT_QUOTES, 'UTF-8') . '</p>
+				<p><label for="name">* ' . htmlspecialchars($txt('name', 'Name', 'Naam'), ENT_QUOTES, 'UTF-8') . '</label>:<br />
+				<input type="text" name="name" id="name" maxlength="50" class="text" required /></p>
+				<p><label for="url">' . htmlspecialchars($txt('url', 'Website', 'Website'), ENT_QUOTES, 'UTF-8') . '</label>:<br />
+				<input type="text" name="url" id="url" maxlength="100" class="text" /></p>
+				<p><label for="text">* ' . htmlspecialchars($txt('comment', 'Comment', 'Reactie'), ENT_QUOTES, 'UTF-8') . '</label>:<br />
+				<textarea name="text" id="text" rows="5" cols="5" maxlength="5000" required></textarea></p>
+				' . mathCaptcha() . '
+				<p>
+					<input type="hidden" name="id" value="' . (int)($_ID ?? 0) . '" />
+					<input type="submit" name="comment" id="comment" class="button" value="' . htmlspecialchars($txt('submit', 'Submit', 'Verzenden'), ENT_QUOTES, 'UTF-8') . '" />
+				</p>
+			</form>
+		</div>';
+    } else {
+        echo '<p>' . htmlspecialchars($txt('frozen_comments', 'Comments are closed.', 'Reageren is gesloten.'), ENT_QUOTES, 'UTF-8') . '</p>';
+    }
+}
+
+// PROCESS A POSTED COMMENT (called from comment() / center() when the comment form is submitted)
+function comment_process(): void
+{
+    $database = db();
+    if (!$database) {
+        return;
+    }
+
+    // Use the language file text when the key exists, otherwise an English fallback.
+    $nl_texts = [
+        'This article does not exist.'                    => 'Dit artikel bestaat niet.',
+        'Comments are closed.'                            => 'Reageren is gesloten.',
+        'Please enter your name.'                         => 'Vul uw naam in.',
+        'Please enter a comment.'                         => 'Vul een reactie in.',
+        'Your comment is too long (maximum 5000 characters).' => 'Uw reactie is te lang (maximaal 5000 tekens).',
+        'The web address is not valid.'                   => 'Het webadres is niet geldig.',
+        'The calculation is not correct.'                 => 'De som is niet juist.',
+        'Please wait a moment before posting another comment.' => 'Wacht even voordat u nog een reactie plaatst.',
+        'Your comment could not be saved. Please try again later.' => 'Uw reactie kon niet worden opgeslagen. Probeer het later opnieuw.',
+        'Thank you, your comment has been posted.'        => 'Bedankt, uw reactie is geplaatst.',
+        'Thank you, your comment was received and will appear after it has been approved.' => 'Bedankt, uw reactie is ontvangen en verschijnt nadat deze is goedgekeurd.',
+    ];
+    $is_nl = strtolower(s('language')) === 'nl';
+    $t = static function (string $key, string $fallback) use ($nl_texts, $is_nl): string {
+        $text = l($key);
+        if ($text !== '') {
+            return $text;
+        }
+        return ($is_nl && isset($nl_texts[$fallback])) ? $nl_texts[$fallback] : $fallback;
+    };
+    $post = static fn(string $key): string => (isset($_POST[$key]) && is_string($_POST[$key])) ? $_POST[$key] : '';
+
+    // The article is taken from the database, never trusted from the form.
+    $articleId = (int)$post('id');
+    $article = null;
+    if ($articleId > 0) {
+        try {
+            $sql = "SELECT id, title, seftitle, category, commentable FROM " . _PRE . "articles
+                    WHERE id = :id AND published = 1" . (_ADMIN ? '' : " AND visible = 'YES'");
+            $stmt = $database->prepare($sql);
+            $stmt->execute(['id' => $articleId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            $article = $row ?: null;
+        } catch (PDOException $e) {
+            $article = null;
+        }
+    }
+
+    if ($article === null) {
+        echo notification(1, $t('comment_no_article', 'This article does not exist.'), 'home');
+        return;
+    }
+
+    $catPath = (int)$article['category'] > 0 ? cat_rel($article['category'], 'seftitle') : '';
+    $back = ($catPath !== '' ? $catPath . '/' : '') . (string)$article['seftitle'];
+
+    if ((string)$article['commentable'] !== 'YES' || s('freeze_comments') === 'YES') {
+        echo notification(1, $t('frozen_comments', 'Comments are closed.'), $back);
+        return;
+    }
+
+    // Collect and validate the fields
+    $name = trim(preg_replace('/[\x00-\x1F\x7F]/', '', strip_tags($post('name'))) ?? '');
+    $name = mb_substr($name, 0, 50);
+    $url = trim($post('url'));
+    $text = $post('text');
+
+    if ($name === '') {
+        echo notification(1, $t('comment_name_empty', 'Please enter your name.'), $back);
+        return;
+    }
+    if (trim($text) === '') {
+        echo notification(1, $t('comment_text_empty', 'Please enter a comment.'), $back);
+        return;
+    }
+    if (mb_strlen($text) > 5000) {
+        echo notification(1, $t('comment_too_long', 'Your comment is too long (maximum 5000 characters).'), $back);
+        return;
+    }
+    if ($url !== '') {
+        if (stripos($url, 'www.') === 0) {
+            $url = 'http://' . $url;
+        }
+        $scheme = strtolower((string)parse_url($url, PHP_URL_SCHEME));
+        if (filter_var($url, FILTER_VALIDATE_URL) === false || !in_array($scheme, ['http', 'https'], true) || mb_strlen($url) > 100) {
+            echo notification(1, $t('comment_url_invalid', 'The web address is not valid.'), $back);
+            return;
+        }
+    }
+
+    if (!checkMathCaptcha()) {
+        echo notification(1, $t('comment_captcha_wrong', 'The calculation is not correct.'), $back);
+        return;
+    }
+
+    // Flood protection (administrators are exempt)
+    $timer = (int)s('comment_repost_timer');
+    $timer = $timer > 0 ? $timer : 15;
+    $last = (int)($_SESSION[_SITE . 'comment_time'] ?? 0);
+    if (!_ADMIN && $last > 0 && (time() - $last) < $timer) {
+        echo notification(1, $t('comment_wait', 'Please wait a moment before posting another comment.'), $back);
+        return;
+    }
+
+    $comment = cleanComment($text);
+    $approved = (_ADMIN || s('approve_comments') !== 'on') ? 'True' : '';
+
+    try {
+        $stmt = $database->prepare("INSERT INTO " . _PRE . "comments (articleid, name, url, comment, time, approved)
+                                    VALUES (:articleid, :name, :url, :comment, :time, :approved)");
+        $stmt->execute([
+            'articleid' => (int)$article['id'],
+            'name'      => $name,
+            'url'       => $url,
+            'comment'   => $comment,
+            'time'      => date('Y-m-d H:i:s'),
+            'approved'  => $approved,
+        ]);
+    } catch (PDOException $e) {
+        echo notification(1, $t('comment_not_saved', 'Your comment could not be saved. Please try again later.'), $back);
+        return;
+    }
+
+    $_SESSION[_SITE . 'comment_time'] = time();
+
+    // Optional e-mail notification to the site owner
+    $to = (string)s('website_email');
+    if (s('mail_on_comments') === 'on' && filter_var($to, FILTER_VALIDATE_EMAIL) !== false) {
+        $subject = mb_encode_mimeheader('New comment: ' . str_replace(["\r", "\n"], ' ', (string)$article['title']), 'UTF-8');
+        $body = 'Article: ' . (string)$article['title'] . "\n"
+              . 'Name: ' . $name . "\n"
+              . ($url !== '' ? 'URL: ' . $url . "\n" : '')
+              . ($approved === '' ? "Status: waiting for approval\n" : '')
+              . "\n" . br2nl(html_entity_decode($comment, ENT_QUOTES, 'UTF-8')) . "\n";
+        $headers = "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nFrom: " . $to . "\r\n";
+        @mail($to, $subject, $body, $headers);
+    }
+
+    if ($approved === 'True') {
+        echo notification(0, $t('comment_sent', 'Thank you, your comment has been posted.'), $back);
+    } else {
+        echo notification(0, $t('comment_sent_approve', 'Thank you, your comment was received and will appear after it has been approved.'), $back);
+    }
+}
+
+// NEW COMMENTS
+function new_comments(mixed $number = 5, mixed $stringlen = 30): void
+{
+    $database = db();
+    if (!$database) {
+        echo '<li>' . l('no_comments') . '</li>';
+        return;
+    }
+
+    $number = (int)$number;
+    $stringlen = (int)$stringlen;
+
+    $query = "SELECT a.id AS aid, a.title, a.seftitle AS asef, a.category, co.id, co.articleid, co.name AS coname, co.comment,
+			c.name, c.seftitle AS csef, c.subcat, x.name AS xname, x.seftitle AS xsef
+		FROM " . _PRE . "comments AS co
+		LEFT OUTER JOIN " . _PRE . "articles AS a ON co.articleid = a.id AND a.published = 1 AND (a.commentable = 'YES' OR a.commentable = 'FREEZ')
+		LEFT OUTER JOIN " . _PRE . "categories AS c ON a.category = c.id AND c.published = 'YES'
+		LEFT OUTER JOIN " . _PRE . "categories AS x ON c.subcat = x.id AND x.published = 'YES'
+		WHERE co.approved = 'True' AND a.id IS NOT NULL
+		ORDER BY co.id DESC LIMIT " . $number;
+
+    try {
+        $result = $database->query($query);
+        if ($result) {
+            $has_comments = false;
+            foreach ($result as $r) {
+                $has_comments = true;
+                $name = (string)($r['coname'] ?? '');
+                $comment = (string)($r['comment'] ?? '');
+                $comment = preg_replace('/<br\s*\/?>/i', ' ', $comment) ?? $comment;
+                $comment = html_entity_decode(strip_tags($comment), ENT_QUOTES, 'UTF-8');
+                $ncom = $name . ' (' . $comment;
+                if (mb_strlen($ncom) > $stringlen) {
+                    $ncom = mb_substr($ncom, 0, $stringlen - 3) . '...';
+                } else {
+                    if (mb_strlen($name) < $stringlen) {
+                        $ncom .= ')';
+                    }
+                }
+                $ncom = str_replace(' ...', '...', $ncom);
+
+                $link = '';
+                if (isset($r['xsef']) && !empty($r['xsef'])) {
+                    $link .= $r['xsef'] . '/';
+                }
+                if (isset($r['csef']) && !empty($r['csef'])) {
+                    $link .= $r['csef'] . '/';
+                }
+                $link .= (string)$r['asef'];
+
+                echo '<li><a href="' . _SITE . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '/" title="' . htmlspecialchars(l('comment_info') . ' ' . (string)$r['title'], ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($ncom, ENT_QUOTES, 'UTF-8') . '</a></li>';
+            }
+
+            if (!$has_comments) {
+                echo '<li>' . l('no_comments') . '</li>';
+            }
+        } else {
+            echo '<li>' . l('no_comments') . '</li>';
+        }
+    } catch (PDOException $e) {
+        echo '<li>' . l('no_comments') . '</li>';
+    }
+}
+
+// SEARCH FORM
+function searchform(): void
+{
+    ?>
+	<form id="search_engine" method="post" action="<?php echo _SITE; ?>" accept-charset="<?php echo htmlspecialchars(s('charset') ?: 'UTF-8', ENT_QUOTES, 'UTF-8'); ?>">
+		<p>
+			<input class="searchfield" name="search_query" type="text" id="keywords" placeholder="<?php echo htmlspecialchars(l('search_keywords'), ENT_QUOTES, 'UTF-8'); ?>" required />
+			<input class="searchbutton" name="submit" type="submit" value="<?php echo htmlspecialchars(l('search_button'), ENT_QUOTES, 'UTF-8'); ?>" />
+		</p>
+	</form>
+	<?php
+}
+
+// SEARCH FORM 2
+function searchform2(): void
+{
+    $charset = htmlspecialchars(s('charset') ?: 'UTF-8', ENT_QUOTES, 'UTF-8');
+    $session_part = htmlspecialchars(substr(session_id(), 2, 7), ENT_QUOTES, 'UTF-8');
+    echo '<form id="search_engine2" method="post" class="navbar-form navbar-right" action="' . _SITE . 'searching/" accept-charset="' . $charset . '">
+		<input class="searchfield" name="search_query" type="text" id="keywords2" class="form-control" placeholder="' . htmlspecialchars(l('search_keywords'), ENT_QUOTES, 'UTF-8') . '" required />
+		<input type="hidden" name="search2" id="s2" value="' . $session_part . '" />
+		<button type="submit" class="btn btn-sm btn-default" name="submit">' . htmlspecialchars(l('search_button'), ENT_QUOTES, 'UTF-8') . '</button>
+	</form>';
+}
+
+// SEARCH ENGINE
+function search(mixed $limit = 20): void
+{
+    $search_query = trim((string)cleanXSS($_POST['search_query'] ?? ''));
+
+    echo '<h2>' . htmlspecialchars(l('search_results'), ENT_QUOTES, 'UTF-8') . '</h2>';
+
+    if (mb_strlen($search_query) < 4 || $search_query === l('search_keywords')) {
+        echo '<p>' . htmlspecialchars(l('charerror'), ENT_QUOTES, 'UTF-8') . '</p>';
+        echo '<p><a href="' . _SITE . '">' . l('backhome') . '</a></p>';
+        return;
+    }
+
+    $database = db();
+    if (!$database) {
+        echo '<p>' . l('dberror') . '</p>';
+        return;
+    }
+
+    // Commas mean "any of these terms" (OR). Otherwise spaces mean
+    // "all of these words" (AND), matching the original sNews behavior.
+    $search_query = mb_substr($search_query, 0, 100);
+    $has_comma = str_contains($search_query, ',');
+    if ($has_comma) {
+        $terms = array_filter(array_map('trim', explode(',', $search_query)), static fn($term) => $term !== '');
+    } else {
+        $terms = array_filter(preg_split('/\s+/u', $search_query), static fn($term) => $term !== '');
+    }
+    $terms = array_slice(array_values($terms), 0, 8);
+
+    if (empty($terms)) {
+        echo '<p>' . htmlspecialchars(l('charerror'), ENT_QUOTES, 'UTF-8') . '</p>';
+        echo '<p><a href="' . _SITE . '">' . l('backhome') . '</a></p>';
+        return;
+    }
+
+    $params = [];
+    $term_clauses = [];
+    foreach ($terms as $index => $term) {
+        // Native MySQL prepared statements require a unique placeholder for
+        // each position; the same :name cannot be reused three times.
+        $title_key = ':title' . $index;
+        $text_key = ':text' . $index;
+        $keywords_key = ':keywords' . $index;
+        // "!" is the escape character, so a visitor cannot use % and _ as wildcards.
+        $like = '%' . str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term) . '%';
+        $params[$title_key] = $like;
+        $params[$text_key] = $like;
+        $params[$keywords_key] = $like;
+        $term_clauses[] = '(a.title LIKE ' . $title_key . " ESCAPE '!' OR a.text LIKE " . $text_key . " ESCAPE '!' OR a.keywords_meta LIKE " . $keywords_key . " ESCAPE '!')";
+    }
+
+    $search_where = '(' . implode($has_comma ? ' OR ' : ' AND ', $term_clauses) . ')';
+    $visible = _ADMIN ? '' : " AND a.visible = 'YES' ";
+
+    $sql = "SELECT a.id, a.title, a.seftitle AS asef, a.date, a.category,
+                   c.name AS name, c.seftitle AS csef,
+                   x.name AS xname, x.seftitle AS xsef
+            FROM " . _PRE . "articles AS a
+            LEFT JOIN " . _PRE . "categories AS c ON a.category = c.id AND c.published = 'YES'
+            LEFT JOIN " . _PRE . "categories AS x ON c.subcat = x.id AND x.published = 'YES'
+            WHERE a.position <> 2
+              AND a.published = 1
+              " . $visible . "
+              AND " . $search_where . "
+            ORDER BY a.id DESC
+            LIMIT " . (int)$limit;
+
+    try {
+        $stmt = $database->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        echo '<p>' . l('dberror') . '</p>';
+        return;
+    }
+
+    if (empty($rows)) {
+        echo '<p>' . l('noresults') . '<strong>' . htmlspecialchars($search_query, ENT_QUOTES, 'UTF-8') . '</strong>.</p>';
+        echo '<p><a href="' . _SITE . '">' . l('backhome') . '</a></p>';
+        return;
+    }
+
+    echo '<p><strong>' . count($rows) . '</strong> ' . l('resultsfound') . ' <strong>' . htmlspecialchars($search_query, ENT_QUOTES, 'UTF-8') . '</strong>.</p>';
+
+    $date_format = (string)s('date_format');
+    foreach ($rows as $row) {
+        $link = '';
+        if (!empty($row['xsef'])) {
+            $link = $row['xsef'] . '/';
+        }
+        if (!empty($row['csef'])) {
+            $link .= $row['csef'] . '/';
+        }
+        $link .= (string)$row['asef'];
+
+        $category_name = !empty($row['name']) ? ' (' . $row['name'] . ')' : '';
+        $date = !empty($row['date']) ? date($date_format !== '' ? $date_format : 'Y-m-d', strtotime((string)$row['date'])) : '';
+
+        echo '<p><a href="' . _SITE . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '/">' .
+             htmlspecialchars((string)$row['title'], ENT_QUOTES, 'UTF-8') .
+             htmlspecialchars($category_name, ENT_QUOTES, 'UTF-8') . '</a> - ' .
+             htmlspecialchars($date, ENT_QUOTES, 'UTF-8') . '</p>';
+    }
+
+    echo '<p><a href="' . _SITE . '">' . l('backhome') . '</a></p>';
+}
+
+// RSS LINKS
+function rss_links(): void
+{
+    $database = db();
+    if (!$database) {
+        return;
+    }
+
+    $query = "SELECT COUNT(id) as articles_count,
+		(SELECT COUNT(id) FROM " . _PRE . "articles WHERE position = 3 AND published = 1) as pages_count,
+		(SELECT COUNT(id) FROM " . _PRE . "comments WHERE approved = 'True') as comments_count
+		FROM " . _PRE . "articles WHERE position = 1 AND published = 1";
+
+    try {
+        $result = $database->query($query);
+        if ($result) {
+            $l_error = [];
+            foreach ($result as $r) {
+                foreach ($r as $k => $v) {
+                    if ((int)$v > 0) {
+                        $l = explode('_', (string)$k);
+                        $rss_type = $l[0] ?? 'articles';
+                        echo '<li><a href="rss-' . htmlspecialchars($rss_type, ENT_QUOTES, 'UTF-8') . '/">' . htmlspecialchars(l('rss_' . $rss_type), ENT_QUOTES, 'UTF-8') . '</a></li>';
+                    } else {
+                        $l_error[] = $k;
+                    }
+                }
+            }
+            if (count($l_error) === 3) {
+                echo '<li>' . htmlspecialchars(l('no_rss'), ENT_QUOTES, 'UTF-8') . '</li>';
+            }
+        }
+    } catch (PDOException $e) {
+        echo '<li>' . htmlspecialchars(l('no_rss'), ENT_QUOTES, 'UTF-8') . '</li>';
+    }
+}
+
+// LOGIN/LOGOUT LINK
+function login_link(): void
+{
+    $login = '<a href="' . _SITE;
+    $must_login = 'login/" title="' . htmlspecialchars(l('login'), ENT_QUOTES, 'UTF-8') . '">' . l('login');
+    $login .= _ADMIN ? 'administration/" title="' . htmlspecialchars(l('administration'), ENT_QUOTES, 'UTF-8') . '">' . l('administration') . '</a> ' . l('divider') : $must_login;
+    $login .= _ADMIN ? ' <a href="' . _SITE . 'logout/" title="' . htmlspecialchars(l('logout'), ENT_QUOTES, 'UTF-8') . '">' . l('logout') : '';
+    $login .= '</a>';
+    echo $login;
+}
+
+// LOGIN THROTTLE: 5 failed attempts per IP address lock that address for 15 minutes.
+// The counter lives in the system temp folder, outside the web root.
+function login_throttle_file(): string
+{
+    $ip = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    return rtrim(sys_get_temp_dir(), '/\\') . DIRECTORY_SEPARATOR . 'snews_login_'
+        . hash('sha256', $ip . '|' . (defined('SECURE_ID') ? SECURE_ID : '')) . '.json';
+}
+
+function login_throttle_state(): array
+{
+    $file = login_throttle_file();
+    $raw = is_file($file) ? @file_get_contents($file) : false;
+    $data = is_string($raw) ? json_decode($raw, true) : null;
+    if (!is_array($data)) {
+        $data = [];
+    }
+    return [
+        'count'        => (int)($data['count'] ?? 0),
+        'first'        => (int)($data['first'] ?? 0),
+        'locked_until' => (int)($data['locked_until'] ?? 0),
+    ];
+}
+
+function login_throttle_locked(): int
+{
+    $state = login_throttle_state();
+    return $state['locked_until'] > time() ? $state['locked_until'] - time() : 0;
+}
+
+function login_throttle_fail(): void
+{
+    $state = login_throttle_state();
+    $now = time();
+    if ($state['first'] === 0 || ($now - $state['first']) > 900) {
+        $state = ['count' => 0, 'first' => $now, 'locked_until' => 0];
+    }
+    $state['count']++;
+    if ($state['count'] >= 5) {
+        $state['locked_until'] = $now + 900;
+    }
+    @file_put_contents(login_throttle_file(), json_encode($state), LOCK_EX);
+}
+
+function login_throttle_clear(): void
+{
+    $file = login_throttle_file();
+    if (is_file($file)) {
+        @unlink($file);
+    }
+}
+
+// VERIFY LOGIN
+function verify_login(): void
+{
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['Loginform']) && !_ADMIN) {
+        $wait = login_throttle_locked();
+        if ($wait > 0) {
+            if (!headers_sent()) {
+                http_response_code(429);
+                header('Retry-After: ' . $wait);
+            }
+            $locked_msg = l('login_locked');
+            if ($locked_msg === '') {
+                $locked_msg = strtolower(s('language')) === 'nl'
+                    ? 'Te veel mislukte inlogpogingen. Probeer het over een kwartier opnieuw.'
+                    : 'Too many failed login attempts. Please try again in 15 minutes.';
+            }
+            echo notification(1, $locked_msg, 'login');
+            return;
+        }
+
+        $uname_input = isset($_POST['uname']) ? (string)$_POST['uname'] : '';
+        $pass_input = isset($_POST['pass']) ? (string)$_POST['pass'] : '';
+
+        $user = checkUserPass($uname_input);
+        $pass_new = checkPassword($pass_input);
+        // Older installs stored a password that had been run through cleanXSS(); keep those working.
+        $pass_legacy = checkUserPass($pass_input);
+
+        $key = md5((string)ini_value('SECURITY', 'string_hash'));
+        $sid1 = isset($_POST['sid']) ? (string)$_POST['sid'] : '';
+        $sid2 = substr(session_id(), 2, 7);
+
+        $salt_string = '$6$' . $key . '$';
+        $salt = hash_equals(crypt($sid2, $salt_string), $sid1);
+
+        unset($_POST['uname'], $_POST['pass'], $_POST['sid']);
+
+        $captcha_ok = checkMathCaptcha();
+        $stored_hash = (string)s('password');
+        $user_ok = $user !== null && hash_equals((string)s('username'), $user);
+        $pass_ok = ($pass_new !== null && password_verify($pass_new, $stored_hash))
+            || ($pass_legacy !== null && $pass_legacy !== $pass_new && password_verify($pass_legacy, $stored_hash));
+
+        if ($captcha_ok && $user_ok && $pass_ok && $salt) {
+            session_regenerate_id(true);
+            $_SESSION[_SITE . 'Logged_In'] = token();
+            $_SESSION[_SITE . 'last_active'] = time();
+            unset($_SESSION['csrf_token']);
+            login_throttle_clear();
+            echo '<h3>' . htmlspecialchars(l('login_success'), ENT_QUOTES, 'UTF-8') . '</h3>';
+
+            if (!headers_sent()) {
+                header('Refresh: 2; url=' . _SITE . 'administration/');
+            }
+            echo '<meta http-equiv="refresh" content="2; url=' . htmlspecialchars(_SITE . 'administration/', ENT_QUOTES, 'UTF-8') . '">';
+        } else {
+            login_throttle_fail();
+            usleep(300000);
+            echo notification(1, l('err_Login'), 'login');
+            return;
+        }
+    } else {
+        set_error();
+    }
+}
+
+// LOGIN
+function login(): void
+{
+    if (!_ADMIN) {
+        $sid = substr(session_id(), 2, 7);
+        $key = md5((string)ini_value('SECURITY', 'string_hash'));
+        $salt_string = '$6$' . $key . '$';
+        $encryped = crypt($sid, $salt_string);
+
+        echo '
+		<div class="adminpanel">
+			<h2>' . htmlspecialchars(l('login'), ENT_QUOTES, 'UTF-8') . '</h2>
+			<form method="post" action="' . _SITE . '" id="post" accept-charset="UTF-8">
+				<p>' . htmlspecialchars(l('login_limit'), ENT_QUOTES, 'UTF-8') . '</p>
+				<p><label for="uname">* ' . htmlspecialchars(l('username'), ENT_QUOTES, 'UTF-8') . '</label>:<br />
+				<input type="text" name="uname" id="uname" maxlength="40" class="text" value="" required /></p>
+				<p><label for="pass">* ' . htmlspecialchars(l('password'), ENT_QUOTES, 'UTF-8') . '</label>:<br />
+				<input type="password" name="pass" id="pass" maxlength="40" class="text" value="" required /></p>
+				' . mathCaptcha() . '
+				<p>
+					<input type="hidden" name="sid" id="sid" value="' . htmlspecialchars($encryped, ENT_QUOTES, 'UTF-8') . '" />
+					<input type="hidden" name="Loginform" id="Loginform" value="True" />
+					<input type="submit" name="submit" id="submit" class="button" value="' . htmlspecialchars(l('login'), ENT_QUOTES, 'UTF-8') . '" />
+				</p>
+			</form>
+		</div>';
+    } else {
+        echo '<h2>' . htmlspecialchars(l('logged_in'), ENT_QUOTES, 'UTF-8') . '</h2>
+			<p><a href="' . _SITE . 'logout/" title="' . htmlspecialchars(l('logout'), ENT_QUOTES, 'UTF-8') . '">' . l('logout') . '</a></p>';
+    }
+}
+
+// INCLUDE ADMIN IF LOGGED
+if (_ADMIN) {
+    include_once 'admin.php';
+}
+
+// CENTER – now at global scope
+function center(): void
+{
+    global $categorySEF;
+    $categorySEF_str = (string)($categorySEF ?? '');
+
+    if (isset($_SESSION[_SITE . 'fatal'])) {
+        unset($_SESSION[_SITE . 'fatal']);
+        return;
+    }
+
+    if (isset($_GET['action']) && !_ADMIN) {
+        set_error();
+        return;
+    }
+
+    if (check_category($categorySEF_str)) {
+        global $routes;
+        $page = $routes[$categorySEF_str] ?? null;
+        if ($page !== null && isset($page['func']) && function_exists($page['func'])) {
+            $page['func']();
+            return;
+        }
+    }
+
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        switch (true) {
+            case isset($_POST['search_query']):
+                search();
+                return;
+            case isset($_POST['comment']):
+                comment('comment_posted');
+                return;
+            case isset($_POST['contactform']):
+                if (function_exists('contact')) {
+                    contact();
+                }
+                return;
+            case isset($_POST['Loginform']):
+                verify_login();
+                return;
+            case isset($_POST['process']):
+                if (_ADMIN && function_exists('processing')) {
+                    processing();
+                }
+                return;
+            case isset($_POST['action']):
+                if (_ADMIN && $_POST['action'] === 'process' && function_exists('processing')) {
+                    processing();
+                    return;
+                }
+        }
+        set_error();
+        return;
+    }
+    elseif (!empty($_GET)) {
+        $action = $categorySEF_str;
+
+        if ($action === 'searching') {
+            searchform2();
+            return;
+        }
+
+        if ($action === '404') {
+            show_404();
+            return;
+        }
+
+        if (_ADMIN) {
+            $admin_menu = explode(',', l('admin_SEF'));
+            $action_get = isset($_GET['action']) ? cleanXSS((string)$_GET['action']) : $action;
+            global $routes;
+
+            if ((!empty($action_get) && in_array($action_get, $admin_menu, true)) || isset($routes[$action_get])) {
+                if (function_exists('admin_center')) {
+                    admin_center($action_get);
+                }
+                return;
+            }
+
+            // Only an explicit, unknown admin action is an error. Normal content
+            // paths (categories/articles) must fall through to articles() even
+            // while an administrator is logged in.
+            if (isset($_GET['action'])) {
+                set_error();
+                return;
+            }
+        }
+    }
+    articles();
+}
+
+// ROUTES
+addRoute('login', l('login'), 'login');
+
+// WORD FILTER FILE: must be a file inside the site folder (no absolute paths, no "..")
+function word_filter_path_ok(string $file): bool
+{
+    if ($file === '' || str_contains($file, "\0")) {
+        return false;
+    }
+    $real = realpath($file);
+    $base = realpath(__DIR__);
+    return $real !== false && $base !== false && str_starts_with($real, $base . DIRECTORY_SEPARATOR);
+}
+
+// CLEAN - WORD FILTER
+function cleanWords(string $text): string
+{
+    $filter_enable = s('word_filter_enable');
+    $filter_file = s('word_filter_file');
+
+    if (!empty($filter_enable) && strtolower($filter_enable) === 'on' && !empty($filter_file) && word_filter_path_ok($filter_file) && is_file($filter_file)) {
+        $file_lines = file($filter_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if (is_array($file_lines)) {
+            $patterns = [];
+            foreach ($file_lines as $line) {
+                $word = trim($line);
+                if ($word === '') {
+                    continue;
+                }
+                // A line may be a plain word or a regular expression; fall back to a literal match if it is not a valid pattern.
+                $pattern = '#' . str_replace('#', '\\#', $word) . '#iu';
+                if (@preg_match($pattern, '') === false) {
+                    $pattern = '#' . preg_quote($word, '#') . '#iu';
+                }
+                $patterns[] = $pattern;
+            }
+
+            if (!empty($patterns)) {
+                $replaced = preg_replace($patterns, s('word_filter_change'), $text);
+                if ($replaced !== null) {
+                    $text = $replaced;
+                }
+            }
+        }
+    }
+    return $text;
+}
+
+// CLEAN_XSS
+function cleanXSS(mixed $val, bool $all = false): string
+{
+    if (empty($val)) {
+        return '';
+    }
+
+    $charset = !empty(s('charset')) ? s('charset') : 'UTF-8';
+    $source = htmlspecialchars((string)$val, ENT_COMPAT, $charset);
+
+    $source = preg_replace('/&([a-z])(acute|uml|circ|grave|ring|cedil|slash|tilde|caron|lig|quot|rsquo);/i', '\\1', $source);
+    $source = html_entity_decode($source, ENT_QUOTES, $charset);
+    $source = preg_replace('/[^\x20-\x7E\x0A\x0D]/', '', $source);
+
+    $source = preg_replace_callback('/&#(\d+);/mi', function ($m) {
+        return chr((int)$m[1]);
+    }, $source);
+
+    $source = preg_replace_callback('/&#x([a-f0-9]+);/mi', function ($m) {
+        return chr((int)hexdec($m[1]));
+    }, $source);
+
+    $source = preg_replace('/&(amp;)?#?[a-z0-9]+;/i', '-', $source);
+    $source = preg_replace("/(<|&#x3c;)([a-zA-Z])(>)([^<].+?)(<\/\\2>)/mi", '$4', $source);
+    $source = preg_replace("/(<|&#x3c;)(.+?)(>)/mi", '', $source);
+
+    $badtag = 'javascript|vbscript|body|html|refresh|document.location|document.cookie|\+|alert|feed:|data:|expression|\/etc\/passwd';
+    $badtag .= '|\/etc\/httpd\/conf\/httpd.conf|cgi-bin|autofocus|blink|codebase';
+    $source = preg_replace("/(" . $badtag . ")/mi", '', $source);
+
+    return $all ? preg_replace("/[^a-zA-Z0-9\s_-]/mi", '', $source) : nl2br($source);
+}
+
+// SOME TAGS ARE NOT ALLOWED
+function transformTags(array $source): string
+{
+    $ignore = array('<', '>', '&nvgt;', '"', '\\\'', '"');
+    $replace = array('&lt;', '&gt;', '&amp;nvgt;', '&quot;', "'", '"');
+
+    $count = count($source);
+    for ($i = 1; $i < $count; $i++) {
+        if (isset($source[$i])) {
+            $source[$i] = str_replace($ignore, $replace, $source[$i]);
+        }
+    }
+    unset($source[0]);
+
+    return implode('', $source);
+}
+
+// CLEAN URL TO BBCODE
+function clean_link(array $url): string
+{
+    if (isset($url[1]) && preg_match('/((http)+(s)?:(\/\/)|(www\.))([a-z0-9_\-]+)/', $url[1])) {
+        $link = $url[1];
+        $name = isset($url[2]) && !empty($url[2]) ? $url[2] : 'link';
+        return '[a=' . $link . ']' . $name . '[/a]';
+    }
+    return '&lt;a href="' . ($url[1] ?? '') . '"&gt;' . ($url[2] ?? '') . '&lt;/a&gt;';
+}
+
+// RESTORE TO HTML CODE
+function restore_link(array $url): string
+{
+    $link = (isset($url[1]) && preg_match('/((http)+(s)?:(\/\/)|(www\.))([a-z0-9_\-]+)/', $url[1])) ? $url[1] : '#';
+    $name = isset($url[2]) && !empty($url[2]) ? $url[2] : 'link';
+    return '<a href="' . htmlspecialchars($link, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($name, ENT_QUOTES, 'UTF-8') . '</a>';
+}
+
+// CLEAN COMMENTS
+function cleanComment(mixed $val): string
+{
+    $val_str = trim((string)$val);
+    if ($val_str === '') {
+        return '';
+    }
+
+    $val_str = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $val_str) ?? '';
+    $val_str = cleanWords($val_str);
+
+    // Escape once (existing entities are kept so editing a comment does not double-encode it) and keep the line breaks.
+    return nl2br(htmlspecialchars($val_str, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8', false));
+}
+
+// FILE INCLUSION
+function file_include(mixed $text, mixed $shorten): void
+{
+    $text_str = (string)$text;
+    $shorten_int = (int)$shorten;
+
+    $fulltext = substr($text_str, 0, $shorten_int);
+
+    // Escape stray ampersands only. Existing entities (&amp; &nbsp; &lt; &#039; ...) must stay as they are,
+    // otherwise the editor's HTML would show up as literal "&nbsp;" and "&lt;" on the page.
+    $fulltext = preg_replace('/&(?!(?:[a-zA-Z][a-zA-Z0-9]*|#[0-9]+|#[xX][0-9a-fA-F]+);)/', '&amp;', $fulltext) ?? $fulltext;
+
+    if ($shorten_int < 9999000) {
+        // The cut can fall right after an opening <p>: drop it instead of leaving an empty paragraph
+        $fulltext = preg_replace('~<p(?:\s[^>]*)?>\s*$~i', '', $fulltext) ?? $fulltext;
+
+        if (preg_match_all('~<p[\s>]~i', $fulltext) > substr_count(strtolower($fulltext), '</p>')) {
+            $fulltext .= '</p>';
+        }
+    }
+
+    echo $fulltext;
+}
+
+// BREAK TO NEW LINE
+function br2nl(mixed $text): string
+{
+    $text_str = (string)$text;
+    return str_replace("\r\n", '', str_replace("<br />", "\n", preg_replace('/<br\\\\s*?\\/??>/i', "\n", $text_str)));
+}
+
+// ARTICLES - POSTING TIME
+function posting_time(string $time = ''): void
+{
+    $timestamp = !empty($time) ? strtotime($time) : time();
+    if ($timestamp === false) {
+        $timestamp = time();
+    }
+
+    $thisDay    = (int)date('j', $timestamp);
+    $thisMonth  = (int)date('n', $timestamp);
+    $thisYear   = (int)date('Y', $timestamp);
+    $thisHour   = (int)date('G', $timestamp);
+    $thisMinute = (int)date('i', $timestamp);
+    $presentYear = (int)date('Y');
+
+    echo '<p>' . l('day') . ':&nbsp;<select name="fposting_day">';
+    for ($i = 1; $i <= 31; $i++) {
+        echo '<option value="' . $i . '"' . ($i === $thisDay ? ' selected="selected"' : '') . '>' . $i . '</option>';
+    }
+    echo '</select>&nbsp;&nbsp;' . l('month') . ':&nbsp;<select name="fposting_month">';
+    for ($i = 1; $i <= 12; $i++) {
+        echo '<option value="' . $i . '"' . ($i === $thisMonth ? ' selected="selected"' : '') . '>' . $i . '</option>';
+    }
+    echo '</select>&nbsp;&nbsp;' . l('year') . ':&nbsp;<select name="fposting_year">';
+    $startYear = $thisYear - 3;
+    $endYear   = max($presentYear, $thisYear) + 3;
+    for ($i = $startYear; $i <= $endYear; $i++) {
+        echo '<option value="' . $i . '"' . ($i === $thisYear ? ' selected="selected"' : '') . '>' . $i . '</option>';
+    }
+    echo '</select>&nbsp;&nbsp;' . l('hour') . ':&nbsp;<select name="fposting_hour">';
+    for ($i = 0; $i <= 23; $i++) {
+        echo '<option value="' . $i . '"' . ($i === $thisHour ? ' selected="selected"' : '') . '>' . $i . '</option>';
+    }
+    echo '</select>&nbsp;&nbsp;' . l('minute') . ':&nbsp;<select name="fposting_minute">';
+    for ($i = 0; $i <= 59; $i++) {
+        echo '<option value="' . $i . '"' . ($i === $thisMinute ? ' selected="selected"' : '') . '>' . $i . '</option>';
+    }
+    echo '</select></p>';
+}
+
+// SEND EMAIL
+function send_email(array $send_array): bool
+{
+    if (function_exists('mail')) {
+        // Header values must never contain line breaks (mail header injection).
+        $no_eol = static fn(string $value): string => str_replace(["\r", "\n", "%0a", "%0d"], '', $value);
+        $to = $no_eol((string)($send_array['to'] ?? ''));
+        $name = $no_eol((string)($send_array['name'] ?? ''));
+        $email = $no_eol((string)($send_array['email'] ?? ''));
+        $subject = $no_eol((string)($send_array['subject'] ?? ''));
+        $message = (string)($send_array['message'] ?? '');
+        $comment = (string)($send_array['comment'] ?? '');
+
+        // Keep the display name free of characters that could change the meaning of the From header.
+        $name = str_replace(['<', '>', '"'], '', $name);
+        if (filter_var($to, FILTER_VALIDATE_EMAIL) === false || filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+            echo notification(1, l('contact_not_sent'), 'home');
+            return false;
+        }
+
+        $body = !empty($send_array['status']) ? $send_array['status'] . "\n" : '';
+        $text = '';
+
+        if (!empty($message)) {
+            $text = l('message') . ": \n" . br2nl($message) . "\n";
+        }
+        if (!empty($comment)) {
+            $text = l('comment') . ": \n" . br2nl($comment) . "\n";
+        }
+
+        $charset = !empty(s('charset')) ? s('charset') : 'UTF-8';
+        $header = "MIME-Version: 1.0\n";
+        $header .= "Content-type: text/plain; charset=" . $charset . "\n";
+        $header .= "From: " . $name . " <" . $email . ">\r\nReply-To: " . $name . " <" . $email . ">\r\nReturn-Path: <" . $email . ">\r\n";
+
+        if (!empty($name)) {
+            $body .= l('name') . ': ' . $name . "\n";
+        }
+        if (!empty($email)) {
+            $body .= l('email') . ': ' . $email . "\n";
+        }
+        $body .= $text . "\n";
+
+        $mail_sent = @mail($to, $subject, $body, $header);
+        if ($mail_sent) {
+            echo notification(0, l('contact_sent'), 'home');
+            return true;
+        }
+        echo notification(1, l('contact_not_sent'), 'home');
+    } else {
+        $message = l('contact_not_sent') . '<p>' . l('mail_nexists') . '</p>';
+        echo notification(1, $message, '');
+    }
+    return false;
+}
+
+// FORM GENERATOR
+function html_input(string $type = '', string $name = '', string $id = '', string $value = '', string $label = '', string $css = '', string $script1 = '', string $script2 = '', string $script3 = '', string $checked = '', string $rows = '', string $cols = '', string $method = '', string $action = '', string $legend = ''): string
+{
+    $lbl = !empty($label) ? '<label for="' . htmlspecialchars($id, ENT_QUOTES, 'UTF-8') . '">' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '</label>' : '';
+    $ID = !empty($id) ? ' id="' . htmlspecialchars($id, ENT_QUOTES, 'UTF-8') . '"' : '';
+    $style = !empty($css) ? ' class="' . htmlspecialchars($css, ENT_QUOTES, 'UTF-8') . '"' : '';
+
+    $attribs = $ID . $style . ($script1 ? ' ' . $script1 : '') . ($script2 ? ' ' . $script2 : '') . ($script3 ? ' ' . $script3 : '');
+    $val = ' value="' . htmlspecialchars($value, ENT_QUOTES, 'UTF-8') . '"';
+    $input = '<input type="' . htmlspecialchars($type, ENT_QUOTES, 'UTF-8') . '" name="' . htmlspecialchars($name, ENT_QUOTES, 'UTF-8') . '"' . $attribs;
+
+    $output = '';
+    switch ($type) {
+        case 'form':
+            $output = (!empty($method) && $method !== 'end') ? '<form method="' . htmlspecialchars($method, ENT_QUOTES, 'UTF-8') . '" action="' . htmlspecialchars($action, ENT_QUOTES, 'UTF-8') . '"' . $attribs . ' accept-charset="' . htmlspecialchars(s('charset') ?: 'UTF-8', ENT_QUOTES, 'UTF-8') . '">' : '</form>';
+            break;
+        case 'fieldset':
+            $output = (!empty($legend) && $legend !== 'end') ? '<fieldset><legend' . $attribs . '>' . htmlspecialchars($legend, ENT_QUOTES, 'UTF-8') . '</legend>' : '</fieldset>';
+            break;
+        case 'text':
+        case 'password':
+            $output = '<p>' . $lbl . ':<br />' . $input . $val . ' /></p>';
+            break;
+        case 'checkbox':
+        case 'radio':
+            $check = $checked === 'ok' ? ' checked="checked"' : '';
+            $output = '<p>' . $input . $check . ' /> ' . $lbl . '</p>';
+            break;
+        case 'hidden':
+        case 'submit':
+        case 'reset':
+        case 'button':
+            $output = $input . $val . ' />';
+            break;
+        case 'textarea':
+            $output = '<p>' . $lbl . ':<br /><textarea name="' . htmlspecialchars($name, ENT_QUOTES, 'UTF-8') . '" rows="' . htmlspecialchars($rows, ENT_QUOTES, 'UTF-8') . '" cols="' . htmlspecialchars($cols, ENT_QUOTES, 'UTF-8') . '"' . $attribs . '>' . htmlspecialchars($value, ENT_QUOTES, 'UTF-8') . '</textarea></p>';
+            break;
+    }
+    return $output;
+}
