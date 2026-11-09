@@ -4,26 +4,24 @@ because all sNews versions where  very outdated.
 
 
 10/26 11:34
-There was an error on the homepage.
+There was an error on the homepage. Fixed.
 Homepage fixed — it now returns HTTP 200 and renders the latest articles.
 The home route uses $_TYPE = 8, but articles() only treated 4, 5, and 7 as valid listing types. I made three changes in snews.php:
-•	Line 1275: allow _TYPE === 8 through the guard instead of calling set_error().
-•	Line 1287: count home articles using show_on_home = "YES" AND position = 1.
-•	Line 1293: for the home route, query show_on_home = "YES" rather than category = 0, which returned nothing.
-I also fixed a related rendering issue in line 1399: the info-line template from config.php was being HTML-escaped, so the byline appeared as literal <p class="date">…</p>. It now renders as intended:
-Continue reading 25.10.2026. 20:43
+•	Line 1454: allow _TYPE === 8 through the guard instead of calling set_error().
+•	Line 1455: count home articles using "show_on_home = 'YES' AND position = 1".
+•	Line 1460: for the home route, query show_on_home = "YES" rather than category = 0, which returned nothing.
+
 
 Verified:
 •	/snews18/ → 200, shows “Welcome to sNews 1.8”, no Error: 404
 •	Article page, login, archive, contact, and sitemap → all 200
-•	Admin login and /administration/ → 200, no ACCESS DENIED
-•	/snews_settings/ → 200
+•	When logged in as Admin you can go to  /administration/ → 200, no ACCESS DENIED
+•	When logged in as Admin you can go to /snews_settings/ → 200, no ACCESS DENIED
 
-One heads-up: the settings table currently contains the hash and salt for admin / admin, not test / test — it changed since the earlier fix, presumably via the Settings page. I verified the admin login with admin / admin.
-Usage 1.2M tok10/26 11:35
+One heads-up: the settings table currently contains the hash and salt for admin / admin, not test / test — I changed it since the earlier fix, directly via the database in the settings table. I verified the admin login with admin / admin. You have to change that to your own preferences and safety.
+
 
 Question: Suppose a transfer the files (and the database) to a shared hosting are the login credentials admin, admin then preserved?
-10/26 11:38
 
 Yes — admin / admin will still work after migration, because the login is stored in the database (in the settings table), not in the files. The settings table contains:
 Code block
