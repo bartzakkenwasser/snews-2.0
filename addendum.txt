@@ -95,7 +95,7 @@ default:
         }
         return;
     }
-When logged out, the code fell through to articles() correctly. When logged in, /uncategorized/ and /uncategorized/welcome-to-snews-18/ never reached it.
+When logged out, the code fell through to articles() correctly. When logged in, /uncategorized/ and /uncategorized/welcome-to-snews-20/ never reached it.
 Fix
 The routing block at snews.php:1833 now:
 •	Handles searching and 404 normally.
@@ -107,7 +107,7 @@ Verified
 Request	Logged out	Logged in
 /	200	200
 /uncategorized/	200	200
-/uncategorized/welcome-to-snews-18/	200	200
+/uncategorized/welcome-to-snews-20/	200	200
 /administration/	404	200
 /snews_settings/	404	200
 /article_new/	404	200
@@ -186,7 +186,7 @@ Also do these before going live
 •	Delete all files that are not necessary, don’t just block: databasetest.php (hardcoded remote DB credentials), test.php, app.py, passenger_wsgi.py, snews.db3, SQL/, backups/, and development logs. The .htaccess is a safety net, not a substitute.
 •	Ideally move config.php above public_html and update the path in ini_value().
 •	Change the database password from geheim, change SECURE_ID and string_hash, and use a stronger admin password.
-•	Turn off display_errors in snews.php:18, admin.php:2, and index.php:4 for production; the app currently forces errors on.
+•	Turn off display_errors in snews.php, admin.php, and index.php for production; the app currently forces errors on.
 •	Set file permissions to 644 (files) and 755 (directories); config.php can be 640 or 600 if the PHP user owns it.
 
 htaccess.txt Shared-hosting Apache security and rewrite template; rename to .htaccess
