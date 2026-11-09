@@ -20,11 +20,11 @@ prefix = ""
 
 [SECURITY]
 ; KEY SECURE_ID. Wordt door snews.php geladen; mag niet leeg zijn.
-SECURE_ID = "1234"
+SECURE_ID = "r8K4mN2xQ7pL9sV5"
 
 
 ; Jouw HASH String voor sessiebeveiliging
-string_hash = "use_silly_strings"
+string_hash = "d7W3zT9qP4nX8mR2cK6yF1hS5"
 
 ; Vaste website-adres (optioneel, aanbevolen zodra de site online staat). Voorbeeld: https://www.mijnsite.nl of https://www.mijnsite.nl/map
 ; Leeg laten = het adres wordt uit de aanvraag afgeleid (prima voor localhost).
