@@ -1,4 +1,4 @@
-I was working on this snews18 cms project. I noticed there is something wrong with the login credentials.
+I was working on this snews20 cms project. I noticed there is something wrong with the login credentials.
 I thought the default was username:test, password:test.
 But when i type these in I get an ACCESS DENIED and it shuts me out completely and I'm not able to restore the session. 
 
@@ -18,7 +18,7 @@ The home route uses $_TYPE = 8, but articles() only treated 4, 5, and 7 as valid
 
 
 Verified:
-•	/snews18/ → 200, shows “Welcome to sNews 2.0”, no Error: 404
+•	/snews20/ → 200, shows “Welcome to sNews 2.0”, no Error: 404
 •	Article page, login, archive, contact, and sitemap → all 200
 •	When logged in as admin you can go to  /administration/ → 200, no ACCESS DENIED
 •	When logged in as admin you can go to /snews_settings/ → 200, no ACCESS DENIED
@@ -29,24 +29,26 @@ One heads-up: the settings table currently contains the hash and salt for admin 
 Question: Suppose a transfer the files (and the database) to a shared hosting are the login credentials admin, admin then preserved?
 
 Yes — admin / admin will still work after migration, because the login is stored in the database (in the settings table), not in the files. The settings table contains:
-Code block
+
 username = admin   
 password = $2y$10$uy0yvbOXgr1h7L3B6GGXPupENxqKESFbnzIClUvWCYd5uq/941lLm
 Both admin / admin
 Keep in mind that the username is plain text and the password is hashed and salted.
 
-A full export/import of the snews2.0 database preserves those rows exactly. A fresh install from SQL/snews18.sql:136 also seeds the same admin/admin hashes — but that script drops and recreates tables, so don’t run it over the live data.
+
+
+A full export/import of the snews2.0 database preserves those rows exactly. A fresh install from SQL/snews20.sql also seeds the same admin/admin hashes — but that script drops and recreates tables, so don’t run it over the live data.
 
 Migration checklist
-1.	Update the database settings in config.php — localhost, snews18, root, and geheim will not exist on the shared host. Use the host’s DB host, database name, username, and password instead.
-2.	Import only the tables into the database created in cPanel. A phpMyAdmin export often includes CREATE DATABASE snews18 and USE snews18; remove those lines if the host uses a prefixed database name.
+1.	Update the database settings in config.php — localhost, snews20, root, and geheim will not exist on the shared host. Use the host’s DB host, database name, username, and password instead.
+2.	Import only the tables into the database created in cPanel. A phpMyAdmin export often includes CREATE DATABASE snews20 and USE snews20; remove those lines if the host uses a prefixed database name.
 3.	Keep the settings table — don’t copy only articles/categories. That is where the login lives.
 4.	Keep [SECURITY] and prefix as they are — SECURE_ID must stay non-empty, and prefix must match the table names (currently empty).
 5.	Confirm the host supports PHP 8.x, PDO MySQL, and mod_rewrite. The app.py and passenger_wsgi.py files are an unrelated Flask app; on a PHP host, remove or rename them, otherwise Passenger may serve the Flask page instead of sNews.
 6.	Log in again on the new domain. The old browser session won’t transfer, but the credentials will.
 
 Important before uploading
-config.php is currently served as plain text at http://localhost/snews18/config.php (HTTP 200), exposing the database password, SECURE_ID, and string_hash. On shared hosting, that is publicly readable unless you block it. This is done in the .htaccess file.
+config.php is currently served as plain text at http://localhost/snews20/config.php (HTTP 200), exposing the database password, SECURE_ID, and string_hash. On shared hosting, that is publicly readable unless you block it. This is done in the .htaccess file.
 
 At minimum, add this to .htaccess:
 Code block
@@ -74,13 +76,13 @@ Note that .htaccess is ignored on Nginx; on an Nginx host, use the hosting panel
 Also, admin/admin is a weak credential and the hashes are stronger then the MD5 but change them immediately after install. The change-password form currently only accepts 4–13 alphanumeric characters (snews.php:287), so a strong passphrase won’t work until that limit is relaxed. 
 10/26 11:40
 
-Question: I see that I still have the 404 error on the homepage: “HTTP 404 The content you requested could not be found and may not exist. Please choose from content listed below or return to the previous page.” And the address bar shows: http://localhost/snews18/404/ Can you fix that?
+Question: I see that I still have the 404 error on the homepage: “HTTP 404 The content you requested could not be found and may not exist. Please choose from content listed below or return to the previous page.” And the address bar shows: http://localhost/snews20/404/ Can you fix that?
 
 10/26 11:44
 Found the real cause — the homepage itself was already returning 200. The Apache log showed this sequence:
-1.	You opened http://localhost/snews18/ → 200
+1.	You opened http://localhost/snews20/ → 200
 2.	You clicked the article link while logged in → 404
-3.	The 404 handler auto-redirected you to /snews18/404/
+3.	The 404 handler auto-redirected you to /snews20/404/
 So the URL in your address bar was the result of a failed front-end content request while logged in, not the homepage.
 Why it happened
 In center(), the admin branch treated every non-admin GET path as an admin route:
@@ -112,7 +114,7 @@ Request	Logged out	Logged in
 /?action=admin_article&id=1	404	200
 /404/ and unknown paths	404	404
 
-One important detail: refreshing /snews18/404/ will keep showing 404, because that URL is a genuine 404 route. Open http://localhost/snews18/ or click the Home link once. The homepage and its article/category links should now work normally while you are logged in.
+One important detail: refreshing /snews20/404/ will keep showing 404, because that URL is a genuine 404 route. Open http://localhost/snews20/ or click the Home link once. The homepage and its article/category links should now work normally while you are logged in.
 
 10/26 11:47
 
@@ -177,7 +179,7 @@ Yes, Nginx completely ignores .htaccess files.
 •	Because Apache is running behind Nginx, Apache reads and processes your .htaccess files just like it normally would. You do not need to convert your rewrite rules for Nginx; you can upload your standard .htaccess file and your redirects, security rules, and WordPress permalinks will work out of the box.
 
 •	If any page returns HTTP 500 after upload, the host likely disallows AuthConfig, FileInfo, or Header overrides. Ask support to enable AllowOverride, FileInfo, AuthConfig, or move config.php above public_html.
-•	If sNews is installed in a subfolder, uncomment and change RewriteBase /snews18/ in the file.
+•	If sNews is installed in a subfolder, uncomment and change RewriteBase /snews20/ in the file.
 •	The HTTPS redirect and HSTS lines are commented out. Enable them only after HTTPS works; the redirect includes an X-Forwarded-Proto check for proxy/CDN setups.
 •	The existing images/, css/, js/, addons/, and lang/ .htaccess files use old Apache 2.2 Deny/Order syntax. Most shared hosts still support it via mod_access_compat; if assets return 500, those files need converting.
 Also do these before going live
@@ -198,26 +200,26 @@ When you plan to run snews on a live website:
 •	Remove the dev-only files if they’re still uploaded: databasetest.php, test.php, app.py, passenger_wsgi.py, snews.db3, SQL/, and backups/.
 •	Keep a current database backup somewhere outside public_html.
 
-There is this folder within snews18 called addons. There is some kind of example file called 'hello.php'. It explains how to use the files in this folder. When I want to see how the 'hello.php' addon is used I can follow the steps given in that file:
+There is this folder within snews20 called addons. There is some kind of example file called 'hello.php'. It explains how to use the files in this folder. When I want to see how the 'hello.php' addon is used I can follow the steps given in that file:
 
 /* EXPLANATION */ 
 // --> FILE INSIDE ADDON FOLDER 
 // --> FILENAME IS hello not hello.php (ignore .php) 
 // Make sure you use the correct folder name 
-// In this example that is 'snews18' // USAGE FOR PUBLIC 
-// http://localhost/snews18/[filename]/ 
-// USAGE FOR ADMIN // http://localhost/snews18/?action=admin_[filename] 
-// IN THIS EXAMPLE // http://localhost/snews18/hello/ 
-// http://localhost/snews18/?action=admin_hello
+// In this example that is 'snews20' // USAGE FOR PUBLIC 
+// http://localhost/snews20/[filename]/ 
+// USAGE FOR ADMIN // http://localhost/snews20/?action=admin_[filename] 
+// IN THIS EXAMPLE // http://localhost/snews20/hello/ 
+// http://localhost/snews20/?action=admin_hello
 
 This also works for: 
-http://localhost/snews18/archive/ 
-http://localhost/snews18/contact/ 
-http://localhost/snews18/sitemap/ 
+http://localhost/snews20/archive/ 
+http://localhost/snews20/contact/ 
+http://localhost/snews20/sitemap/ 
 
 But this procedure doesn't work for: 
-http://localhost/snews18/auto_example/
-http://localhost/snews18/rss_feeds/ 
+http://localhost/snews20/auto_example/
+http://localhost/snews20/rss_feeds/ 
 Why isn't this working for the last 2 examples?
 
 Both now work. They were failing for different reasons, because the addon system is convention-based.
@@ -258,7 +260,7 @@ Edited 3 files+71-1
 •	addons/rss_feeds.php+46-0
 •	snews.php+2-1
 
-When a filename starts with auto_ it is loaded automatically. Whats the purpose of that feature and what can I do with this feature? And when I execute it by typing http://localhost/snews18/auto_example/ it gives me as output: 
+When a filename starts with auto_ it is loaded automatically. Whats the purpose of that feature and what can I do with this feature? And when I execute it by typing http://localhost/snews20/auto_example/ it gives me as output: 
 
 Auto-loaded addon example
 This file is loaded automatically because its filename starts with auto_.
