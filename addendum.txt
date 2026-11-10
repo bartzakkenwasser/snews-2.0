@@ -5,8 +5,6 @@ But when i type these in I get an ACCESS DENIED and it shuts me out completely a
 I restored the username and the password in the setup file for creating the database.
 The most important, I upgraded a lot of code to work with PHP version 8.1. because all sNews versions where  very outdated.
 
-
-10/26 11:34
 There was an error on the homepage. Fixed.
 
 Homepage fixed — it now returns HTTP 200 and renders the latest articles.
@@ -34,15 +32,14 @@ username = admin
 password = $2y$10$uy0yvbOXgr1h7L3B6GGXPupENxqKESFbnzIClUvWCYd5uq/941lLm
 Both admin / admin
 Keep in mind that the username is plain text and the password is hashed and salted.
-
-
+You can change it when you login first and then go to the /administration/ section and then 'settings'. At the bottom you see 'Change Username and Password'
 
 A full export/import of the snews2.0 database preserves those rows exactly. A fresh install from SQL/snews20.sql also seeds the same admin/admin hashes — but that script drops and recreates tables, so don’t run it over the live data.
 
 Migration checklist
-1.	Update the database settings in config.php — localhost, snews20, root, and geheim will not exist on the shared host. Use the host’s DB host, database name, username, and password instead.
-2.	Import only the tables into the database created in cPanel. A phpMyAdmin export often includes CREATE DATABASE snews20 and USE snews20; remove those lines if the host uses a prefixed database name.
-3.	Keep the settings table — don’t copy only articles/categories. That is where the login lives.
+1.	Update the database settings in config.php — localhost, snews20, root, and geheim will not exist on the shared host. These are arbitrary values ​​and serve merely as an example. Use your host’s DB host, database name, username, and password instead.
+2.	Import only the tables into the database. A phpMyAdmin export often includes CREATE DATABASE snews20 and USE snews20; remove those lines if the host uses a prefixed database name.
+3.	Keep the settings table — don’t copy only articles/categories. In the settings table is where the login lives.
 4.	Keep [SECURITY] and prefix as they are — SECURE_ID must stay non-empty, and prefix must match the table names (currently empty).
 5.	Confirm the host supports PHP 8.x, PDO MySQL, and mod_rewrite. The app.py and passenger_wsgi.py files are an unrelated Flask app; on a PHP host, remove or rename them, otherwise Passenger may serve the Flask page instead of sNews.
 6.	Log in again on the new domain. The old browser session won’t transfer, but the credentials will.
@@ -68,12 +65,11 @@ Code block
 </FilesMatch>
 
 PHP can still read config.php from disk; this only blocks HTTP access. Also remove or relocate:
-•	snews.db3 — downloadable SQLite file.
 •	SQL/ — installer scripts.
 •	backups/ — contains a full database dump.
 •	logs/ — development files.
 Note that .htaccess is ignored on Nginx; on an Nginx host, use the hosting panel’s “deny” rules or move these files above public_html.
-Also, admin/admin is a weak credential and the hashes are stronger then the MD5 but change them immediately after install. The change-password form currently only accepts 4–13 alphanumeric characters (snews.php:287), so a strong passphrase won’t work until that limit is relaxed. 
+Also, admin/admin is a weak credential (as explained earlier) and the new hashes are stronger then the MD5 but change admin/admin immediately after install. The change-password form currently only accepts 4–13 alphanumeric characters (snews.php:287), so a strong passphrase won’t work until that limit is relaxed. 
 10/26 11:40
 
 Question: I see that I still have the 404 error on the homepage: “HTTP 404 The content you requested could not be found and may not exist. Please choose from content listed below or return to the previous page.” And the address bar shows: http://localhost/snews20/404/ Can you fix that?
