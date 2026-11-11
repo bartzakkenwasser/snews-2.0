@@ -70,11 +70,10 @@ PHP can still read config.php from disk; this only blocks HTTP access. Also remo
 •	logs/ — development files.
 Note that .htaccess is ignored on Nginx; on an Nginx host, use the hosting panel’s “deny” rules or move these files above public_html.
 Also, admin/admin is a weak credential (as explained earlier) and the new hashes are stronger then the MD5 but change admin/admin immediately after install. The change-password form currently only accepts 4–13 alphanumeric characters (snews.php:287), so a strong passphrase won’t work until that limit is relaxed. 
-10/26 11:40
+
 
 Question: I see that I still have the 404 error on the homepage: “HTTP 404 The content you requested could not be found and may not exist. Please choose from content listed below or return to the previous page.” And the address bar shows: http://localhost/snews20/404/ Can you fix that?
 
-10/26 11:44
 Found the real cause — the homepage itself was already returning 200. The Apache log showed this sequence:
 1.	You opened http://localhost/snews20/ → 200
 2.	You clicked the article link while logged in → 404
@@ -112,11 +111,9 @@ Request	Logged out	Logged in
 
 One important detail: refreshing /snews20/404/ will keep showing 404, because that URL is a genuine 404 route. Open http://localhost/snews20/ or click the Home link once. The homepage and its article/category links should now work normally while you are logged in.
 
-10/26 11:47
 
 Question: I get a message when composing a new article/post which says: "Functie posting_time() is niet beschikbaar." I don't know why that is in Dutch language. Besides that, the option or button to save the article isn't there (or invisible). Can you fix both problems?
 
-10/26 12:37
 Both problems are fixed.
 1. The Dutch posting_time() message
 posting_time() was removed from snews.php during the PHP 8 refactor, but admin.php still called it. When the function was missing, the code printed a hardcoded Dutch fallback.
@@ -137,11 +134,10 @@ Verified
 •	Scheduled an article for 2027 → saved with published = 2.
 •	Deleted all temporary test articles; only the original “Welcome to sNews 1.8” article remains.
 
-10/26 12:40
 
 There was a basic .htaccess file but that didn’t provide a lot of security. I added more lines absolutely necessary for security that a .htaccess needs when uploaded to shared hosting? 
 
-10/26 13:45
+
 
 I created htaccess.txt and applied the same content to the  .htaccess locally so I could test it. Rename htaccess.txt to .htaccess on the shared host.
 What was missing beyond the original 3-line block
@@ -187,7 +183,6 @@ Also do these before going live
 
 htaccess.txt Shared-hosting Apache security and rewrite template; rename to .htaccess
 
-10/26 13:49
 
 When you plan to run snews on a live website:
 •	Change admin / admin to a unique password via Settings → Change Username and Password. The form currently allows 4–13 alphanumeric characters.
